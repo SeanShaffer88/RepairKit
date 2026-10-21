@@ -23,4 +23,4 @@ jobs:
           java-version: 17
 
       - name: 'Submit Dependency Graph'
-        uses: gradle/actions/dependency-submission@v3
+        uses: gradle/actions/dependency-submission@v4
