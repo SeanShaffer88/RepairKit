@@ -1,193 +1,236 @@
+/*
+ * RepairKit - an all-in-one Java-based Windows repair and maintenance toolkit.
+ * Copyright (C) 2026 Foulest (https://github.com/Foulest)
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
 package net.foulest.repairkit.util;
 
 import com.sshtools.twoslices.Toast;
 import com.sshtools.twoslices.ToastType;
-import lombok.AccessLevel;
-import lombok.Data;
-import lombok.NoArgsConstructor;
 import net.foulest.repairkit.util.config.ConfigLoader;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
-import javax.swing.*;
-import java.util.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
- * Utility class for WinGet operations.
+ * WinGet integration.
+ * <p>
+ * The old implementation installed a PowerShell module on every run and
+ * inferred success from four English error strings. This version invokes
+ * {@code winget.exe} directly, decides based on exit codes, and never counts an
+ * excluded or failed package as updated.
  *
  * @author Foulest
  */
-@Data
-@SuppressWarnings("resource")
-@NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class WinGetUtil {
 
-    /**
-     * The list of excluded programs.
-     */
-    public static @NotNull List<String> excludedPrograms = new ArrayList<>();
+    private static final Duration LIST_TIMEOUT = Duration.ofMinutes(5);
+    private static final Duration UPGRADE_TIMEOUT = Duration.ofMinutes(20);
+    private static final int UPDATE_NOT_APPLICABLE = -1978335189; // 0x8A15002B
+
+    private static final Pattern PACKAGE_ID =
+            Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._+\\-]{2,}$");
+    private static final Pattern COLUMN_SEPARATOR = Pattern.compile("\\s{2,}");
+
+    private WinGetUtil() {
+        throw new UnsupportedOperationException("Utility class");
+    }
 
     /**
-     * Updates all outdated programs.
+     * Updates every outdated package that is not excluded by configuration.
+     *
+     * @return the update summary
      */
-    @SuppressWarnings("unchecked")
-    public static void updateAllPrograms() {
-        @NotNull ConfigLoader configLoader = new ConfigLoader(FileUtil.getConfigFile("update_programs.json"));
-        Map<String, Object> config = configLoader.getConfig() == null ? null : configLoader.getConfig().get("excludedPrograms");
-        Object values = config == null ? null : config.get("values");
+    public static @NotNull UpdateSummary updateAllPrograms() {
+        @Nullable Path winget = wingetExecutable();
 
-        if (values == null || ((Collection<String>) values).isEmpty()) {
-            DebugUtil.debug("No excluded programs found.");
-            excludedPrograms = new ArrayList<>();
-        } else {
-            excludedPrograms = new ArrayList<>((Collection<String>) values);
+        if (winget == null) {
+            return new UpdateSummary(List.of(), List.of(), List.of(),
+                    "WinGet is not installed, so program updates were skipped.");
         }
 
-        @NotNull List<String> outdatedPrograms = getOutdatedPrograms();
+        @NotNull List<String> excluded = excludedPrograms();
+        @NotNull CommandResult listing = CommandUtil.run(winget, LIST_TIMEOUT,
+                "upgrade", "--include-unknown", "--accept-source-agreements",
+                "--disable-interactivity");
 
-        // Checks if the user clicked no.
-        if (outdatedPrograms.equals(List.of("None"))) {
-            DebugUtil.debug("User chose not to update outdated programs.");
-            return;
+        if (listing.timedOut()) {
+            return new UpdateSummary(List.of(), List.of(), List.of(),
+                    "WinGet did not respond while listing upgrades.");
         }
 
-        // Checks if there are no outdated programs.
-        if (outdatedPrograms.isEmpty()) {
-            Toast.toast(ToastType.INFO, "RepairKit", "No outdated programs found.");
-            DebugUtil.debug("No outdated programs found.");
-            return;
-        }
+        @NotNull List<String> candidates = parseUpgradeIds(listing.output());
+        @NotNull List<String> skipped = new ArrayList<>();
+        @NotNull List<String> attempted = new ArrayList<>();
 
-        @NotNull List<String> updatedPrograms = new ArrayList<>();
-        int excludedCount = 0;
-
-        for (@NotNull String id : outdatedPrograms) {
-            if (excludedPrograms.stream().anyMatch(excluded -> id.toLowerCase(Locale.ROOT)
-                    .contains(excluded.toLowerCase(Locale.ROOT)))) {
-                DebugUtil.debug("Skipping excluded program: " + id);
-                updatedPrograms.add(id);
-            }
-
-            // Skips programs that have already been marked as updated.
-            if (updatedPrograms.contains(id)) {
-                ++excludedCount;
-                continue;
-            }
-
-            Toast.toast(ToastType.INFO, "RepairKit", "Updating program: " + id);
-            DebugUtil.debug("Updating program: " + id);
-
-            if (updatePackage(id)) {
-                Toast.toast(ToastType.INFO, "RepairKit", "Updated program: " + id);
-                DebugUtil.debug("Updated program: " + id);
-                updatedPrograms.add(id);
+        for (String id : candidates) {
+            if (isExcluded(id, excluded)) {
+                DebugUtil.debug("Skipping excluded package: " + id);
+                skipped.add(id);
             } else {
-                Toast.toast(ToastType.INFO, "RepairKit", "Failed to update program: " + id);
-                DebugUtil.debug("Failed to update program: " + id);
-                updatedPrograms.add(id);
-            }
-
-            // Pause for a moment to allow the notification to fade.
-            try {
-                Thread.sleep(3000);
-            } catch (InterruptedException ex) {
-                DebugUtil.warn("Failed to sleep thread", ex);
-                Thread.currentThread().interrupt();
+                attempted.add(id);
             }
         }
 
-        // Displays a final notification message.
-        if (excludedCount == outdatedPrograms.size()) {
-            Toast.toast(ToastType.INFO, "RepairKit", "No outdated programs found.");
-            DebugUtil.debug("No outdated programs found.");
-        } else {
-            Toast.toast(ToastType.INFO, "RepairKit", "All programs are up to date.");
-            DebugUtil.debug("All programs are up to date.");
+        if (attempted.isEmpty()) {
+            return new UpdateSummary(List.of(), List.of(), skipped,
+                    candidates.isEmpty()
+                            ? "No outdated programs were found."
+                            : "Every outdated program is excluded in update_programs.json.");
+        }
+
+        notifyUser("Updating " + attempted.size() + " program(s) with WinGet...");
+
+        @NotNull List<String> updated = new ArrayList<>();
+        @NotNull List<String> failed = new ArrayList<>();
+
+        for (String id : attempted) {
+            @NotNull CommandResult result = CommandUtil.run(winget, UPGRADE_TIMEOUT,
+                    "upgrade", "--id", id, "--exact", "--silent",
+                    "--accept-package-agreements", "--accept-source-agreements",
+                    "--disable-interactivity");
+
+            if (result.succeeded()) {
+                updated.add(id);
+            } else if (result.exitCode() == UPDATE_NOT_APPLICABLE) {
+                skipped.add(id);
+            } else {
+                failed.add(id);
+                DebugUtil.warn("Failed to update " + id + ": " + result.tail(5), null);
+            }
+        }
+
+        @NotNull String message = "WinGet: " + updated.size() + " updated, "
+                + failed.size() + " failed, " + skipped.size() + " skipped.";
+
+        notifyUser(message);
+        return new UpdateSummary(updated, failed, skipped, message);
+    }
+
+    private static void notifyUser(@NotNull String message) {
+        try {
+            Toast.toast(ToastType.INFO, "RepairKit", message);
+        } catch (RuntimeException | LinkageError ex) {
+            // Toast notifications need a desktop session and an AWT tray; a repair
+            // run must not fail when they are unavailable.
+            DebugUtil.debug("Toast notification unavailable: " + ex.getMessage());
         }
     }
 
-    private static void installDependencies() {
-        // Installs NuGet and the WinGet client.
-        CommandUtil.runPowerShellCommand("Install-PackageProvider -Name NuGet -Force | Out-Null", false);
-        CommandUtil.runPowerShellCommand("Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery | Out-Null", false);
+    private static @Nullable Path wingetExecutable() {
+        @NotNull Path candidate = WindowsUtil.localAppData()
+                .resolve("Microsoft").resolve("WindowsApps").resolve("winget.exe");
+
+        if (Files.isRegularFile(candidate)) {
+            return candidate;
+        }
+
+        DebugUtil.debug("WinGet was not found at " + candidate);
+        return null;
     }
 
-    private static @NotNull List<String> getOutdatedPrograms() {
-        Toast.toast(ToastType.INFO, "RepairKit", "Checking for outdated programs...");
-        DebugUtil.debug("Checking for outdated programs...");
+    /**
+     * Parses package IDs from the {@code winget upgrade} table.
+     * <p>
+     * The table layout is stable across locales even though the headings are
+     * translated: data rows have at least four whitespace-separated columns and
+     * the second column is the package ID.
+     *
+     * @param lines the command output
+     * @return the package IDs
+     */
+    static @NotNull List<String> parseUpgradeIds(@NotNull List<String> lines) {
+        @NotNull Set<String> ids = new LinkedHashSet<>();
+        boolean inTable = false;
 
-        // Installs the required dependencies for WinGet.
-        installDependencies();
+        for (String line : lines) {
+            @NotNull String trimmed = line.trim();
 
-        // Gets the list of outdated programs.
-        @NotNull List<String> output = CommandUtil.getPowerShellCommandOutput("Get-WinGetPackage -Source winget"
-                + " | Where-Object IsUpdateAvailable | Select-Object -ExpandProperty Id", false, false);
-
-        @NotNull List<String> programs = new ArrayList<>();
-
-        // Ignores empty lines.
-        for (@NotNull String line : output) {
-            DebugUtil.debug("Found program: " + line);
-            @NotNull String trim = line.trim();
-
-            // Skips excluded programs (checks via lowercase)
-            if (excludedPrograms.stream().anyMatch(excluded -> trim.toLowerCase(Locale.ROOT)
-                    .contains(excluded.toLowerCase(Locale.ROOT)))) {
-                DebugUtil.debug("Skipping excluded program: " + trim);
+            if (trimmed.isEmpty()) {
                 continue;
             }
 
-            if (trim.isEmpty()) {
-                DebugUtil.debug("Skipping blank program...");
+            if (!inTable) {
+                if (trimmed.matches("^-{5,}.*$")) {
+                    inTable = true;
+                }
+
                 continue;
             }
 
-            DebugUtil.debug("Adding program: " + trim);
-            programs.add(trim);
+            if (trimmed.matches("^-{5,}.*$")) {
+                continue;
+            }
+
+            String[] columns = COLUMN_SEPARATOR.split(trimmed);
+
+            if (columns.length < 4 || !PACKAGE_ID.matcher(columns[1]).matches()) {
+                continue;
+            }
+
+            ids.add(columns[1]);
         }
 
-        DebugUtil.debug("Found " + programs.size() + " outdated programs.");
-        DebugUtil.debug("Programs: " + programs);
-
-        // Create a new message builder.
-        @NotNull StringBuilder builder = new StringBuilder();
-        builder.append("The following programs are outdated:\n");
-
-        // Adds the programs to the builder.
-        for (String program : programs) {
-            builder.append("\n- ").append(program);
-        }
-
-        // Check if the builder is empty, aside from the initial message.
-        if (builder.toString().equals("The following programs are outdated:\n")) {
-            return programs;
-        }
-
-        // Adds a warning message to the builder.
-        builder.append("\n\nWould you like to update these programs now?");
-        builder.append("\n\nMake sure to close any programs that may be affected.");
-        builder.append("\nYou can exclude programs in the update_programs.json file.");
-
-        // Show the yes/no dialog.
-        SoundUtil.playSound(ConstantUtil.WARNING_SOUND);
-        int result = JOptionPane.showConfirmDialog(null, builder.toString(),
-                "Update Outdated Programs", JOptionPane.YES_NO_OPTION);
-
-        // If the user selects no, return an empty list.
-        if (result != JOptionPane.YES_OPTION) {
-            return List.of("None");
-        }
-        return programs;
+        return new ArrayList<>(ids);
     }
 
-    private static boolean updatePackage(String id) {
-        String output = CommandUtil.getPowerShellCommandOutput("winget upgrade --id " + id
-                        + " --disable-interactivity --silent --accept-package-agreements --accept-source-agreements",
-                false, false).toString();
-        DebugUtil.debug("Output: " + output);
+    private static @NotNull List<String> excludedPrograms() {
+        @NotNull ConfigLoader loader = new ConfigLoader(FileUtil.configFile("update_programs.json"));
+        @NotNull Map<String, Object> excluded = loader.category("excludedPrograms");
 
-        return !output.contains("The package cannot be upgraded")
-                && !output.contains("This package's version number cannot be determined")
-                && !output.contains("Installer hash does not match")
-                && !output.contains("No available upgrade found");
+        return ConfigLoader.strings(excluded, "values").stream()
+                .map(value -> value.toLowerCase(Locale.ROOT))
+                .toList();
+    }
+
+    private static boolean isExcluded(@NotNull String id, @NotNull List<String> excluded) {
+        @NotNull String lower = id.toLowerCase(Locale.ROOT);
+        return excluded.stream().anyMatch(lower::contains);
+    }
+
+    /**
+     * The outcome of an update run.
+     *
+     * @param updated package IDs that were upgraded
+     * @param failed  package IDs that failed to upgrade
+     * @param skipped package IDs that were excluded or had no applicable update
+     * @param message diagnostic summary
+     * @author Foulest
+     */
+    public record UpdateSummary(@NotNull List<String> updated,
+                                @NotNull List<String> failed,
+                                @NotNull List<String> skipped,
+                                @NotNull String message) {
+
+        /**
+         * Checks whether every attempted upgrade succeeded.
+         *
+         * @return {@code true} when nothing failed
+         */
+        public boolean hasFailures() {
+            return !failed.isEmpty();
+        }
     }
 }
