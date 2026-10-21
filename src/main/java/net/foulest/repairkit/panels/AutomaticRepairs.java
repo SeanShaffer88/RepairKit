@@ -17,825 +17,574 @@
  */
 package net.foulest.repairkit.panels;
 
-import com.sun.jna.platform.win32.WinReg;
-import net.foulest.repairkit.RepairKit;
-import net.foulest.repairkit.util.*;
-import net.foulest.repairkit.util.config.ConfigLoader;
-import net.foulest.repairkit.util.config.tasks.types.BloatwareTaskRunner;
-import net.foulest.repairkit.util.config.tasks.types.FeaturesTaskRunner;
-import net.foulest.repairkit.util.config.tasks.types.RegistryTaskRunner;
-import net.foulest.repairkit.util.config.tasks.types.ServicesTaskRunner;
+import net.foulest.repairkit.Messages;
+import net.foulest.repairkit.model.CancellationToken;
+import net.foulest.repairkit.model.RepairOption;
+import net.foulest.repairkit.model.RepairReport;
+import net.foulest.repairkit.model.RepairTask;
+import net.foulest.repairkit.model.RiskLevel;
+import net.foulest.repairkit.model.StepStatus;
+import net.foulest.repairkit.model.TaskResult;
+import net.foulest.repairkit.service.RepairOperations;
+import net.foulest.repairkit.service.RepairService;
+import net.foulest.repairkit.util.ConstantUtil;
+import net.foulest.repairkit.util.CommandResult;
+import net.foulest.repairkit.util.CommandUtil;
+import net.foulest.repairkit.util.DebugUtil;
+import net.foulest.repairkit.util.SoundUtil;
+import net.foulest.repairkit.util.SwingUtil;
+import net.foulest.repairkit.util.WindowsUtil;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import javax.swing.*;
+import javax.swing.border.EmptyBorder;
+import javax.swing.table.DefaultTableModel;
 import java.awt.*;
-import java.util.ArrayList;
-import java.util.Arrays;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Set;
 
 /**
  * The Automatic Repairs panel.
+ * <p>
+ * Options are separated from progress: checkboxes are a configuration, and the
+ * results table reports what actually happened. The run button, progress bar,
+ * and cancel button all operate on the event dispatch thread, while the repair
+ * work runs sequentially on a background thread.
  *
  * @author Foulest
  */
-public class AutomaticRepairs extends JPanel {
+public final class AutomaticRepairs extends JPanel {
+
+    private final Map<String, JCheckBox> optionBoxes = new LinkedHashMap<>();
+    private final Map<String, Integer> rowByTask = new LinkedHashMap<>();
+
+    private final JButton runButton;
+    private final JButton cancelButton;
+    private final JButton viewLogButton;
+    private final JButton openBackupsButton;
+    private final JProgressBar progressBar = new JProgressBar();
+    private final JLabel statusLabel = new JLabel(Messages.get("footer.ready"));
+    private final DefaultTableModel resultsModel;
+    private final JTable resultsTable;
+
+    private final boolean safeMode;
+    private CancellationToken token = new CancellationToken();
+    private volatile Boolean bitLockerProtected;
 
     /**
-     * The progress checkboxes that display the status of the automatic repairs.
+     * Creates the panel.
+     *
+     * @param safeMode whether Windows is running in Safe Mode
      */
-    private final JCheckBox @NotNull [] progressCheckboxes;
+    public AutomaticRepairs(boolean safeMode) {
+        super(new BorderLayout(0, 12));
+        this.safeMode = safeMode;
+        setBorder(new EmptyBorder(16, 18, 12, 18));
 
-    /**
-     * The run button for the automatic repairs.
-     */
-    private final @NotNull JButton runButton;
+        add(createHeader(), BorderLayout.PAGE_START);
 
-    /**
-     * Creates the Automatic Repairs panel.
-     */
-    @SuppressWarnings("NestedMethodCall")
-    public AutomaticRepairs() {
-        // Sets the panel's layout to null.
-        DebugUtil.debug("Setting the Automatic Repairs panel layout to null...");
-        setLayout(null);
+        @NotNull JPanel options = new JPanel();
+        options.setLayout(new BoxLayout(options, BoxLayout.Y_AXIS));
+        options.setBorder(new EmptyBorder(4, 0, 4, 0));
 
-        // Creates the title label.
-        DebugUtil.debug("Creating the Automatic Repairs title label...");
-        @NotNull JLabel titleLabel = SwingUtil.createLabel("Automatic Repairs",
-                new Rectangle(20, 15, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 18)
-        );
-        add(titleLabel);
+        boolean advancedHeading = false;
 
-        // Creates the description label.
-        DebugUtil.debug("Creating the Automatic Repairs description label...");
-        @NotNull JLabel descriptionLabel = SwingUtil.createLabel("<html>RepairKit will automatically apply registry settings,"
-                        + " disable telemetry settings, optimize Windows services, remove bloatware, repair disk"
-                        + " issues, and more.<br><br>Automatic repairs are recommended to be run once per month.</html>",
-                new Rectangle(20, 40, 500, 100),
-                new Font(ConstantUtil.ARIAL, Font.PLAIN, 14)
-        );
-        descriptionLabel.setMaximumSize(new Dimension(500, Integer.MAX_VALUE));
-        add(descriptionLabel);
+        for (RepairOption option : RepairOperations.options()) {
+            if (option.risk() == RiskLevel.HIGH && !advancedHeading) {
+                options.add(createAdvancedHeading());
+                advancedHeading = true;
+            }
 
-        // Creates the run button.
-        DebugUtil.debug("Creating the Automatic Repairs run button...");
-        runButton = new JButton("Run Automatic Repairs");
-        runButton.setBounds(20, 145, 220, 40);
-        runButton.setFont(new Font(ConstantUtil.ARIAL, Font.BOLD, 14));
-        runButton.setBackground(new Color(0, 120, 215));
-        runButton.setForeground(Color.WHITE);
-        runButton.addActionListener(e -> runAutomaticRepairs());
-        add(runButton);
+            options.add(createOptionRow(option));
+        }
 
-        // Creates the progress label.
-        DebugUtil.debug("Creating the Automatic Repairs progress label...");
-        @NotNull JLabel progressLabel = SwingUtil.createLabel("Progress:",
-                new Rectangle(20, 205, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 14)
-        );
-        add(progressLabel);
+        @NotNull JScrollPane optionsScroll = SwingUtil.scroll(options);
+        optionsScroll.setBorder(BorderFactory.createTitledBorder(Messages.get("repairs.options")));
+        optionsScroll.setPreferredSize(new Dimension(700, 300));
 
-        String @NotNull [] progressItems = {
-                "Create Restore Point (Slow)",
-                "Delete System Policies",
-                "Run Registry Tweaks",
-                "Run System Tweaks",
-                "Run Features Tweaks",
-                "Run Services Tweaks",
-                "Run Windows Defender Tweaks",
-                "Remove Junk Files",
-                "Remove Bloatware",
-                "Repair Disk Issues",
-                "Update Outdated Programs"
+        resultsModel = new DefaultTableModel(
+                new Object[]{Messages.get("repairs.column.task"),
+                        Messages.get("repairs.column.status"),
+                        Messages.get("repairs.column.details")}, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
         };
 
-        // Creates the progress checkboxes.
-        DebugUtil.debug("Creating the Automatic Repairs progress checkboxes...");
-        progressCheckboxes = new JCheckBox[progressItems.length];
-        int numberOfItems = progressItems.length;
+        resultsTable = new JTable(resultsModel);
+        resultsTable.setFillsViewportHeight(true);
+        resultsTable.setRowHeight(Math.max(22, resultsTable.getRowHeight()));
+        resultsTable.getColumnModel().getColumn(0).setPreferredWidth(320);
+        resultsTable.getColumnModel().getColumn(1).setPreferredWidth(110);
+        resultsTable.getColumnModel().getColumn(2).setPreferredWidth(460);
+        resultsTable.getAccessibleContext().setAccessibleName(
+                Messages.get("repairs.results"));
 
-        int x = 16;
-        int y = 235;
-        int maxWidth = 450;
-        int checkboxHeight = 28;
-        int checkboxWidth = 240;
+        @NotNull JScrollPane resultsScroll = new JScrollPane(resultsTable);
+        resultsScroll.setBorder(BorderFactory.createTitledBorder(
+                Messages.get("repairs.results")));
 
-        for (int i = 0; i < numberOfItems; i++) {
-            progressCheckboxes[i] = new JCheckBox(progressItems[i]);
-            progressCheckboxes[i].setFont(new Font(ConstantUtil.ARIAL, Font.PLAIN, 14));
-            progressCheckboxes[i].setBounds(x, y, checkboxWidth, checkboxHeight);
-            progressCheckboxes[i].setSelected(false);
+        @NotNull JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
+                optionsScroll, resultsScroll);
+        split.setResizeWeight(0.55);
+        split.setContinuousLayout(true);
+        split.setBorder(null);
+        add(split, BorderLayout.CENTER);
 
-            y += checkboxHeight;
-            if (y + checkboxHeight > maxWidth) {
-                y = 235;
-                x += checkboxWidth;
-            }
-        }
+        runButton = SwingUtil.primaryButton(Messages.get("repairs.run"),
+                Messages.get("repairs.run"), this::startRun);
+        cancelButton = SwingUtil.button(Messages.get("repairs.cancel"),
+                Messages.get("repairs.cancel"), this::requestCancel);
+        cancelButton.setEnabled(false);
 
-        // Adds the progress checkboxes to the panel.
-        DebugUtil.debug("Adding the Automatic Repairs progress checkboxes to the panel...");
-        for (JCheckBox checkbox : progressCheckboxes) {
-            add(checkbox);
-        }
+        viewLogButton = SwingUtil.button(Messages.get("repairs.openLog"),
+                Messages.get("repairs.openLog"), this::viewLog);
+        openBackupsButton = SwingUtil.button(Messages.get("repairs.openBackups"),
+                Messages.get("repairs.openBackups"), this::openBackups);
+        openBackupsButton.setEnabled(false);
 
-        // Sets the panel's border.
-        DebugUtil.debug("Setting the Automatic Repairs panel border...");
-        setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+        add(createControls(), BorderLayout.PAGE_END);
+
+        // BitLocker queries are slow; run the check in the background so the
+        // confirmation dialog can mention it without blocking the interface.
+        Thread bitLockerCheck = new Thread(() -> {
+            bitLockerProtected = WindowsUtil.isSystemDriveBitLockerProtected();
+        }, "repairkit-bitlocker");
+        bitLockerCheck.setDaemon(true);
+        bitLockerCheck.start();
     }
 
-    /**
-     * Runs the automatic repairs.
-     */
-    @SuppressWarnings("NestedMethodCall")
-    private void runAutomaticRepairs() {
-        DebugUtil.debug("Running Automatic Repairs...");
+    private @NotNull JPanel createAdvancedHeading() {
+        @NotNull JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        panel.setBorder(new EmptyBorder(14, 0, 4, 0));
 
-        // Disables the run button.
-        DebugUtil.debug("Disabling the run button...");
-        runButton.setEnabled(false);
-        runButton.setBackground(Color.LIGHT_GRAY);
+        @NotNull JLabel heading = SwingUtil.heading(Messages.get("repairs.advanced"));
+        heading.setAlignmentX(Component.LEFT_ALIGNMENT);
+        panel.add(heading);
 
-        // Creates a new thread to run the automatic repairs.
-        @NotNull Thread repairThread = new Thread(() -> {
-            try {
-                // Sets the state of all checkboxes to variables.
-                boolean createRestorePoint = progressCheckboxes[0].isSelected();
-                boolean deleteSystemPolicies = progressCheckboxes[1].isSelected();
-                boolean runRegistryTweaks = progressCheckboxes[2].isSelected();
-                boolean runSystemTweaks = progressCheckboxes[3].isSelected();
-                boolean runFeaturesTweaks = progressCheckboxes[4].isSelected();
-                boolean runServicesTweaks = progressCheckboxes[5].isSelected();
-                boolean runWindowsDefenderTweaks = progressCheckboxes[6].isSelected();
-                boolean removeJunkFiles = progressCheckboxes[7].isSelected();
-                boolean removeBloatware = progressCheckboxes[8].isSelected();
-                boolean repairDiskIssues = progressCheckboxes[9].isSelected();
-                boolean updateOutdatedPrograms = progressCheckboxes[10].isSelected();
+        @NotNull JLabel note = new JLabel("<html><body style='width:640px'>"
+                + SwingUtil.escapeHtml(Messages.get("repairs.advanced.description"))
+                + "</body></html>");
+        note.setFont(SwingUtil.font(Font.PLAIN, 12));
+        note.setAlignmentX(Component.LEFT_ALIGNMENT);
+        panel.add(note);
+        return panel;
+    }
 
-                // Gets the total number of selected repair options.
-                AtomicInteger totalCompleted = new AtomicInteger();
-                int totalChecked = (int) Arrays.stream(progressCheckboxes).filter(AbstractButton::isSelected).count();
+    private @NotNull JPanel createHeader() {
+        @NotNull JPanel header = new JPanel();
+        header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
 
-                // Disables all checkboxes.
-                for (@NotNull JCheckBox checkbox : progressCheckboxes) {
-                    checkbox.setEnabled(false);
-                    checkbox.setSelected(false);
-                }
+        @NotNull JLabel title = SwingUtil.title(Messages.get("repairs.title"));
+        title.setAlignmentX(Component.LEFT_ALIGNMENT);
+        header.add(title);
 
-                // Checks if no repair options are selected.
-                if (!deleteSystemPolicies
-                        && !runRegistryTweaks
-                        && !runSystemTweaks
-                        && !runFeaturesTweaks
-                        && !runServicesTweaks
-                        && !runWindowsDefenderTweaks
-                        && !removeJunkFiles
-                        && !removeBloatware
-                        && !repairDiskIssues
-                        && !updateOutdatedPrograms) {
-                    SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
-                    JOptionPane.showMessageDialog(null, "Please select at least one repair option.", "Error", JOptionPane.ERROR_MESSAGE);
+        @NotNull JLabel description = SwingUtil.description(
+                Messages.get("repairs.description"), 760);
+        description.setAlignmentX(Component.LEFT_ALIGNMENT);
+        header.add(description);
 
-                    // Resets the run button.
-                    DebugUtil.debug("Resetting the run button...");
-                    runButton.setEnabled(true);
-                    runButton.setBackground(new Color(0, 120, 215));
+        if (safeMode) {
+            @NotNull JLabel notice = new JLabel(Messages.get("startup.safemode.message"));
+            notice.setFont(SwingUtil.font(Font.BOLD, 12));
+            notice.setBorder(new EmptyBorder(8, 0, 0, 0));
+            notice.setAlignmentX(Component.LEFT_ALIGNMENT);
+            header.add(notice);
+        }
 
-                    // Resets the checkboxes.
-                    DebugUtil.debug("Resetting the Automatic Repairs progress checkboxes...");
-                    for (@NotNull JCheckBox checkbox : progressCheckboxes) {
-                        checkbox.setEnabled(true);
-                        checkbox.setSelected(false);
-                    }
-                    return;
-                }
+        return header;
+    }
 
-                // Checks if the operating system is outdated.
-                DebugUtil.debug("Checking if the operating system is outdated...");
-                if (RepairKit.isOutdatedOperatingSystem()) {
-                    SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
-                    JOptionPane.showMessageDialog(null, ConstantUtil.OUTDATED_OS_MESSAGE, ConstantUtil.OUTDATED_OS_TITLE, JOptionPane.ERROR_MESSAGE);
-                    return;
-                }
+    private @NotNull JPanel createOptionRow(@NotNull RepairOption option) {
+        @NotNull JPanel row = new JPanel();
+        row.setLayout(new BoxLayout(row, BoxLayout.Y_AXIS));
+        row.setBorder(new EmptyBorder(2, 0, 6, 0));
+        row.setAlignmentX(Component.LEFT_ALIGNMENT);
 
-                // Creates a restore point.
-                if (createRestorePoint) {
-                    runButton.setText("Creating Restore Point...");
-                    createRestorePoint();
-                    SwingUtilities.invokeLater(() -> progressCheckboxes[0].setSelected(true));
-                    totalCompleted.incrementAndGet();
-                    SwingUtilities.invokeLater(() -> runButton.setText("Running Repairs... (" + totalCompleted + "/" + totalChecked + ")"));
-                }
+        @NotNull JCheckBox box = new JCheckBox(option.title(), option.defaultEnabled());
+        box.setFont(SwingUtil.font(Font.BOLD, 13));
+        box.setToolTipText(option.description());
+        box.getAccessibleContext().setAccessibleDescription(option.description());
+        box.setAlignmentX(Component.LEFT_ALIGNMENT);
 
-                // Updates the run button text to show progress.
-                SwingUtilities.invokeLater(() -> runButton.setText("Running Repairs... (" + totalCompleted + "/" + totalChecked + ")"));
+        if (safeMode && option.id().equals("bloatware")) {
+            box.setEnabled(false);
+            box.setSelected(false);
+            box.setToolTipText(Messages.get("startup.safemode.message"));
+        }
 
-                // Deletes system policies.
-                if (deleteSystemPolicies) {
-                    deleteSystemPolicies();
-                    SwingUtilities.invokeLater(() -> progressCheckboxes[1].setSelected(true));
-                    totalCompleted.incrementAndGet();
-                    SwingUtilities.invokeLater(() -> runButton.setText("Running Repairs... (" + totalCompleted + "/" + totalChecked + ")"));
-                }
+        optionBoxes.put(option.id(), box);
+        row.add(box);
 
-                // Creates tasks for the executor.
-                @NotNull List<Runnable> tasks = List.of(
-                        () -> {
-                            // Runs registry tweaks.
-                            if (runRegistryTweaks) {
-                                runRegistryTweaks();
-                                SwingUtilities.invokeLater(() -> progressCheckboxes[2].setSelected(true));
-                                totalCompleted.incrementAndGet();
-                                SwingUtilities.invokeLater(() -> runButton.setText("Running Repairs... (" + totalCompleted + "/" + totalChecked + ")"));
-                            }
-                        },
+        @NotNull JLabel description = new JLabel("<html><body style='width:640px'>"
+                + SwingUtil.escapeHtml(option.description()) + "</body></html>");
+        description.setFont(SwingUtil.font(Font.PLAIN, 12));
+        description.setBorder(new EmptyBorder(0, 24, 0, 0));
+        description.setAlignmentX(Component.LEFT_ALIGNMENT);
+        row.add(description);
 
-                        () -> {
-                            // Runs system tweaks.
-                            if (runSystemTweaks) {
-                                runSystemTweaks();
-                                SwingUtilities.invokeLater(() -> progressCheckboxes[3].setSelected(true));
-                                totalCompleted.incrementAndGet();
-                                SwingUtilities.invokeLater(() -> runButton.setText("Running Repairs... (" + totalCompleted + "/" + totalChecked + ")"));
-                            }
-                        },
+        @NotNull JLabel risk = new JLabel(Messages.get("repairs.risk", option.risk().displayName()));
+        risk.setFont(SwingUtil.font(Font.PLAIN, 11));
+        risk.setForeground(UIManager.getColor("Label.disabledForeground"));
+        risk.setBorder(new EmptyBorder(0, 24, 0, 0));
+        risk.setAlignmentX(Component.LEFT_ALIGNMENT);
+        row.add(risk);
 
-                        () -> {
-                            // Runs features tweaks.
-                            if (runFeaturesTweaks) {
-                                runFeaturesTweaks();
-                                SwingUtilities.invokeLater(() -> progressCheckboxes[4].setSelected(true));
-                                totalCompleted.incrementAndGet();
-                                SwingUtilities.invokeLater(() -> runButton.setText("Running Repairs... (" + totalCompleted + "/" + totalChecked + ")"));
-                            }
+        return row;
+    }
 
-                            // Repairs disk issues.
-                            // This has to be done after the DISM commands in the above tweaks.
-                            if (repairDiskIssues) {
-                                repairDiskIssues();
-                                SwingUtilities.invokeLater(() -> progressCheckboxes[9].setSelected(true));
-                                totalCompleted.incrementAndGet();
-                                SwingUtilities.invokeLater(() -> runButton.setText("Running Repairs... (" + totalCompleted + "/" + totalChecked + ")"));
-                            }
-                        },
+    private @NotNull JPanel createControls() {
+        @NotNull JPanel controls = new JPanel(new BorderLayout(0, 6));
 
-                        () -> {
-                            // Runs services tweaks.
-                            if (runServicesTweaks) {
-                                runServicesTweaks();
-                                SwingUtilities.invokeLater(() -> progressCheckboxes[5].setSelected(true));
-                                totalCompleted.incrementAndGet();
-                                SwingUtilities.invokeLater(() -> runButton.setText("Running Repairs... (" + totalCompleted + "/" + totalChecked + ")"));
-                            }
-                        },
+        @NotNull JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEADING, 8, 0));
+        buttons.add(SwingUtil.button(Messages.get("repairs.recommended"),
+                Messages.get("repairs.recommended"), this::selectRecommended));
+        buttons.add(SwingUtil.button(Messages.get("repairs.clear"),
+                Messages.get("repairs.clear"), this::clearSelection));
+        buttons.add(Box.createHorizontalStrut(16));
+        buttons.add(runButton);
+        buttons.add(cancelButton);
+        controls.add(buttons, BorderLayout.PAGE_START);
 
-                        () -> {
-                            // Runs Windows Defender tweaks.
-                            if (runWindowsDefenderTweaks) {
-                                runWindowsDefenderTweaks();
-                                SwingUtilities.invokeLater(() -> progressCheckboxes[6].setSelected(true));
-                                totalCompleted.incrementAndGet();
-                                SwingUtilities.invokeLater(() -> runButton.setText("Running Repairs... (" + totalCompleted + "/" + totalChecked + ")"));
-                            }
-                        },
+        @NotNull JPanel progress = new JPanel(new BorderLayout(10, 0));
+        progressBar.setStringPainted(true);
+        progressBar.setString("");
+        progressBar.getAccessibleContext().setAccessibleName(
+                Messages.get("repairs.progressName"));
+        statusLabel.getAccessibleContext().setAccessibleName(
+                Messages.get("repairs.statusName"));
+        progress.add(progressBar, BorderLayout.CENTER);
 
-                        () -> {
-                            // Removes junk files.
-                            if (removeJunkFiles) {
-                                JunkFileUtil.removeJunkFiles();
-                                SwingUtilities.invokeLater(() -> progressCheckboxes[7].setSelected(true));
-                                totalCompleted.incrementAndGet();
-                                SwingUtilities.invokeLater(() -> runButton.setText("Running Repairs... (" + totalCompleted + "/" + totalChecked + ")"));
-                            }
-                        },
+        @NotNull JPanel status = new JPanel(new FlowLayout(FlowLayout.LEADING, 8, 0));
+        status.add(statusLabel);
+        status.add(viewLogButton);
+        status.add(openBackupsButton);
+        progress.add(status, BorderLayout.LINE_END);
+        controls.add(progress, BorderLayout.CENTER);
 
-                        () -> {
-                            // Removes bloatware if the system is not in safe mode.
-                            if (removeBloatware) {
-                                if (!RepairKit.isSafeMode()) {
-                                    removeBloatware();
-                                }
+        return controls;
+    }
 
-                                SwingUtilities.invokeLater(() -> progressCheckboxes[8].setSelected(true));
-                                totalCompleted.incrementAndGet();
-                                SwingUtilities.invokeLater(() -> runButton.setText("Running Repairs... (" + totalCompleted + "/" + totalChecked + ")"));
-                            }
-                        },
+    private void viewLog() {
+        @NotNull Path log = DebugUtil.getLogFile();
+        @NotNull StringBuilder content = new StringBuilder();
 
-                        () -> {
-                            // Updates outdated programs.
-                            if (updateOutdatedPrograms) {
-                                updateOutdatedPrograms();
-                                SwingUtilities.invokeLater(() -> progressCheckboxes[10].setSelected(true));
-                                totalCompleted.incrementAndGet();
-                                SwingUtilities.invokeLater(() -> runButton.setText("Running Repairs... (" + totalCompleted + "/" + totalChecked + ")"));
-                            }
-                        }
-                );
+        try {
+            @NotNull List<String> lines = Files.readAllLines(log, StandardCharsets.UTF_8);
+            int start = Math.max(0, lines.size() - 1000);
 
-                // Executes tasks using TaskUtil.
-                TaskUtil.executeTasks(tasks);
-                DebugUtil.debug("Completed Automatic Repairs.");
+            for (String line : lines.subList(start, lines.size())) {
+                content.append(line).append('\n');
+            }
+        } catch (IOException ex) {
+            DebugUtil.warn("Failed to read the log file", ex);
+            SwingUtil.warning(this, Messages.get("error.log.title"),
+                    Messages.get("repairs.logUnavailable"));
+            return;
+        }
 
-                // Displays a message dialog.
-                DebugUtil.debug("Displaying the Automatic Repairs completion dialog...");
-                SoundUtil.playSound(ConstantUtil.EXCLAMATION_SOUND);
-                JOptionPane.showMessageDialog(null,
-                        "Automatic repairs have been completed.",
-                        "Finished", JOptionPane.QUESTION_MESSAGE);
+        @NotNull JTextArea area = new JTextArea(content.toString(), 26, 100);
+        area.setEditable(false);
+        area.setLineWrap(false);
+        area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        area.setCaretPosition(area.getDocument().getLength());
+        area.getAccessibleContext().setAccessibleName(Messages.get("repairs.log.title"));
 
-                // Resets the run button.
-                DebugUtil.debug("Resetting the run button...");
-                runButton.setText("Run Automatic Repairs");
-                runButton.setEnabled(true);
-                runButton.setBackground(new Color(0, 120, 215));
+        @NotNull JScrollPane scroll = new JScrollPane(area);
+        scroll.setPreferredSize(new Dimension(880, 520));
+        scroll.getAccessibleContext().setAccessibleName(Messages.get("repairs.log.title"));
 
-                // Resets the checkboxes.
-                DebugUtil.debug("Resetting the Automatic Repairs progress checkboxes...");
-                for (@NotNull JCheckBox checkbox : progressCheckboxes) {
-                    checkbox.setEnabled(true);
-                    checkbox.setSelected(false);
-                }
-            } catch (RuntimeException ex) {
-                DebugUtil.warn("Failed to run Automatic Repairs", ex);
-            } finally {
-                SwingUtilities.invokeLater(() -> {
-                    runButton.setText("Run Automatic Repairs");
-                    runButton.setEnabled(true);
-                    runButton.setBackground(new Color(0, 120, 215));
+        JOptionPane.showMessageDialog(this, scroll, Messages.get("repairs.log.title"),
+                JOptionPane.PLAIN_MESSAGE);
+    }
 
-                    for (@NotNull JCheckBox checkbox : progressCheckboxes) {
-                        checkbox.setEnabled(true);
-                    }
-                });
+    private void openBackups() {
+        if (!WindowsUtil.openDirectory(WindowsUtil.backupDirectory())) {
+            SwingUtil.warning(this, Messages.get("error.log.title"),
+                    Messages.get("repairs.backupUnavailable"));
+        }
+    }
+
+    private void selectRecommended() {
+        for (RepairOption option : RepairOperations.options()) {
+            @NotNull JCheckBox box = optionBoxes.get(option.id());
+
+            if (box != null && box.isEnabled()) {
+                box.setSelected(option.defaultEnabled());
+            }
+        }
+    }
+
+    private void clearSelection() {
+        optionBoxes.values().forEach(box -> box.setSelected(false));
+    }
+
+    private @NotNull Set<String> selectedIds() {
+        @NotNull Set<String> selected = new LinkedHashSet<>();
+        optionBoxes.forEach((id, box) -> {
+            if (box.isSelected()) {
+                selected.add(id);
             }
         });
-
-        // Starts the repair thread.
-        repairThread.start();
+        return selected;
     }
 
-    /**
-     * Creates a restore point.
-     */
-    private static void createRestorePoint() {
-        DebugUtil.debug("Creating a restore point...");
-        CommandUtil.getPowerShellCommandOutput("Checkpoint-Computer -Description 'RepairKit Automatic Repairs' -ErrorAction SilentlyContinue", true, false);
-    }
-
-    /**
-     * Deletes any existing system policies.
-     */
-    private static void deleteSystemPolicies() {
-        DebugUtil.debug("Deleting system policies...");
-        @NotNull ConfigLoader configLoader = new ConfigLoader(FileUtil.getConfigFile("system_policies.json"));
-        Map<String, Map<String, Object>> config = configLoader.getConfig();
-        @NotNull RegistryTaskRunner taskRunner = new RegistryTaskRunner(config);
-        @NotNull List<Runnable> tasks = taskRunner.getTasks();
-
-        // Execute tasks using TaskUtil.
-        TaskUtil.executeTasks(tasks);
-        DebugUtil.debug("Completed deleting system policies.");
-    }
-
-    /**
-     * Removes various bloatware applications from the system.
-     */
-    private static void removeBloatware() {
-        DebugUtil.debug("Removing installed bloatware apps...");
-        @NotNull ConfigLoader configLoader = new ConfigLoader(FileUtil.getConfigFile("bloatware.json"));
-        Map<String, Map<String, Object>> config = configLoader.getConfig();
-        @NotNull BloatwareTaskRunner taskRunner = new BloatwareTaskRunner(config);
-        @NotNull List<Runnable> tasks = taskRunner.getTasks();
-
-        // Execute tasks using TaskUtil.
-        TaskUtil.executeTasks(tasks);
-        DebugUtil.debug("Completed removing installed bloatware apps.");
-    }
-
-    /**
-     * Repairs various disk issues.
-     */
-    private static void repairDiskIssues() {
-        @NotNull ConfigLoader configLoader = new ConfigLoader(FileUtil.getConfigFile("disk_issues.json"));
-        Map<String, Object> config = configLoader.getConfig().get("diskIssues");
-
-        // Checks if the config is null.
-        if (config == null) {
+    private void startRun() {
+        if (RepairService.isRunning()) {
             return;
         }
 
-        // Repairs the WMI repository.
-        if (config.get("repairWMI") != null
-                && config.get("repairWMI").equals(Boolean.TRUE)) {
-            DebugUtil.debug("Repairing WMI repository...");
+        @NotNull Set<String> selected = selectedIds();
 
-            if (CommandUtil.getCommandOutput("winmgmt /verifyrepository", false, false).toString().contains("not consistent")
-                    && CommandUtil.getCommandOutput("winmgmt /salvagerepository", false, false).toString().contains("not consistent")) {
-                CommandUtil.runCommand("winmgmt /resetrepository", false);
-                DebugUtil.debug("Repaired WMI repository.");
-            } else {
-                DebugUtil.debug("WMI repository is already consistent.");
+        if (selected.isEmpty()) {
+            SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
+            JOptionPane.showMessageDialog(this, Messages.get("repairs.selectOne.message"),
+                    Messages.get("repairs.selectOne.title"), JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        if (!confirmRun(selected)) {
+            return;
+        }
+
+        token = new CancellationToken();
+        openBackupsButton.setEnabled(false);
+        resultsModel.setRowCount(0);
+        rowByTask.clear();
+        progressBar.setIndeterminate(true);
+        progressBar.setValue(0);
+        progressBar.setString("");
+        statusLabel.setText(Messages.get("repairs.running", 0, 0));
+        setOptionsEnabled(false);
+        runButton.setEnabled(false);
+        cancelButton.setEnabled(true);
+
+        DebugUtil.debug("User started a repair run with: "
+                + RepairOperations.describeSelection(selected));
+
+        Thread worker = new Thread(() -> {
+            try {
+                @NotNull RepairReport report = RepairService.execute(selected, token,
+                        new UiListener());
+                SwingUtilities.invokeLater(() -> finishRun(report));
+            } catch (RuntimeException ex) {
+                DebugUtil.warn("Repair run failed", ex);
+                SwingUtilities.invokeLater(() -> {
+                    resetControls();
+                    SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
+                    JOptionPane.showMessageDialog(this,
+                            Messages.get("error.unexpected.message", ex.getMessage()),
+                            Messages.get("error.unexpected.title"),
+                            JOptionPane.ERROR_MESSAGE);
+                });
+            }
+        }, "repairkit-repairs");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private boolean confirmRun(@NotNull Set<String> selected) {
+        @NotNull List<RepairOption> options = RepairOperations.selectedOptions(selected);
+        @NotNull StringBuilder summary = new StringBuilder("<html><body style='width:560px'>");
+        summary.append("<b>").append(SwingUtil.escapeHtml(
+                Messages.get("repairs.confirm.header"))).append("</b><ul>");
+
+        boolean highRisk = false;
+
+        for (RepairOption option : options) {
+            summary.append("<li>").append(SwingUtil.escapeHtml(option.title()))
+                    .append(" &mdash; ").append(SwingUtil.escapeHtml(
+                            Messages.get("repairs.risk", option.risk().displayName())))
+                    .append("</li>");
+
+            if (option.risk() == RiskLevel.HIGH) {
+                highRisk = true;
             }
         }
 
-        // Repairs disk issues with SFC.
-        if (config.get("repairWithSFC") != null
-                && config.get("repairWithSFC").equals(Boolean.TRUE)) {
-            DebugUtil.debug("Repairing disk issues with SFC...");
+        summary.append("</ul>");
 
-            if (CommandUtil.getCommandOutput("sfc /scannow", false, false).toString().contains("Windows Resource Protection found")) {
-                DebugUtil.debug("Found disk issues with SFC.");
+        if (!selected.contains("restorePoint")) {
+            summary.append("<p><b>").append(SwingUtil.escapeHtml(
+                    Messages.get("repairs.confirm.noRestore"))).append("</b></p>");
+        }
 
-                // Repairs disk issues with DISM.
-                if (config.get("repairWithDISM") != null
-                        && config.get("repairWithDISM").equals(Boolean.TRUE)) {
-                    DebugUtil.debug("Repairing disk issues with DISM...");
-                    CommandUtil.runCommand("DISM /Online /Cleanup-Image /RestoreHealth", false);
-                    DebugUtil.debug("Repaired disk issues with DISM.");
+        summary.append("<p>").append(SwingUtil.escapeHtml(
+                Messages.get("repairs.confirm.backup"))).append("</p>");
+
+        if (highRisk) {
+            summary.append("<p><b>")
+                    .append(SwingUtil.escapeHtml(Messages.get("repairs.confirm.highRisk")))
+                    .append("</b></p>");
+        }
+
+        if (Boolean.TRUE.equals(bitLockerProtected)) {
+            summary.append("<p><b>").append(SwingUtil.escapeHtml(
+                    Messages.get("repairs.bitlocker"))).append("</b></p>");
+        }
+
+        if (WindowsUtil.isDomainJoined()) {
+            summary.append("<p>").append(SwingUtil.escapeHtml(
+                    Messages.get("repairs.domain"))).append("</p>");
+        }
+
+        summary.append("</body></html>");
+
+        int choice = JOptionPane.showConfirmDialog(this, summary.toString(),
+                Messages.get("repairs.confirm.title"),
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+
+        return choice == JOptionPane.OK_OPTION;
+    }
+
+    private void finishRun(@NotNull RepairReport report) {
+        resetControls();
+
+        if (report.backupFile() != null) {
+            openBackupsButton.setEnabled(true);
+        }
+
+        progressBar.setIndeterminate(false);
+        progressBar.setMaximum(100);
+        progressBar.setValue(100);
+        progressBar.setString("");
+
+        @NotNull String summary = report.summary();
+        statusLabel.setText(summary);
+        SoundUtil.playSound(report.isFullySuccessful()
+                ? ConstantUtil.EXCLAMATION_SOUND
+                : ConstantUtil.WARNING_SOUND);
+
+        @NotNull String details = summary + "\n\n"
+                + (report.isFullySuccessful()
+                ? Messages.get("repairs.finished.allOk")
+                : Messages.get("repairs.finished.someFailed"))
+                + "\n\nLog: " + report.logFile();
+
+        if (report.backupFile() != null) {
+            details += "\nRegistry backup: " + report.backupFile();
+        }
+
+        JOptionPane.showMessageDialog(this, details,
+                Messages.get("repairs.finished.title"),
+                report.isFullySuccessful()
+                        ? JOptionPane.INFORMATION_MESSAGE
+                        : JOptionPane.WARNING_MESSAGE);
+
+        if (report.requiresRestart()) {
+            promptForRestart();
+        }
+    }
+
+    private void promptForRestart() {
+        int choice = JOptionPane.showConfirmDialog(this,
+                Messages.get("repairs.restart.message"),
+                Messages.get("repairs.restart.title"),
+                JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE);
+
+        if (choice != JOptionPane.YES_OPTION) {
+            return;
+        }
+
+        @NotNull CommandResult result = CommandUtil.run(
+                WindowsUtil.system32("shutdown.exe"), Duration.ofSeconds(30),
+                "/r", "/t", "0");
+
+        if (!result.succeeded()) {
+            SwingUtil.warning(this, Messages.get("repairs.restart.title"),
+                    Messages.get("repairs.restart.failed", result.tail(2)));
+        }
+    }
+
+    private void resetControls() {
+        progressBar.setIndeterminate(false);
+        statusLabel.setText(Messages.get("footer.ready"));
+        setOptionsEnabled(true);
+        runButton.setEnabled(true);
+        cancelButton.setEnabled(false);
+        viewLogButton.setEnabled(true);
+    }
+
+    private void setOptionsEnabled(boolean enabled) {
+        optionBoxes.forEach((id, box) -> box.setEnabled(enabled
+                && !(safeMode && id.equals("bloatware"))));
+    }
+
+    /**
+     * Requests cancellation of the current run.
+     */
+    public void requestCancel() {
+        if (!RepairService.isRunning()) {
+            return;
+        }
+
+        token.cancel();
+        statusLabel.setText(Messages.get("repairs.cancelling"));
+        cancelButton.setEnabled(false);
+    }
+
+    /**
+     * Updates a results row, adding it when the task was not started yet.
+     *
+     * @param result the result
+     */
+    private void showResult(@NotNull TaskResult result) {
+        @Nullable Integer row = rowByTask.get(result.task().id());
+        @NotNull Object[] values = {
+                result.title(),
+                result.status().displayName(),
+                result.message()
+        };
+
+        if (row == null) {
+            rowByTask.put(result.task().id(), resultsModel.getRowCount());
+            resultsModel.addRow(values);
+        } else {
+            resultsModel.removeRow(row);
+            resultsModel.insertRow(row, values);
+        }
+    }
+
+    private final class UiListener implements RepairService.Listener {
+
+        @Override
+        public void onTaskStarted(@NotNull RepairTask task, int index, int total) {
+            SwingUtilities.invokeLater(() -> {
+                progressBar.setIndeterminate(false);
+                progressBar.setMaximum(total);
+                progressBar.setValue(index);
+                progressBar.setString((index + 1) + " / " + total);
+                statusLabel.setText(Messages.get("repairs.running", index + 1, total));
+
+                if (!rowByTask.containsKey(task.id())) {
+                    rowByTask.put(task.id(), resultsModel.getRowCount());
+                    resultsModel.addRow(new Object[]{task.title(),
+                            StepStatus.RUNNING.displayName(), ""});
                 }
-            } else {
-                DebugUtil.debug("No disk issues found with SFC.");
-            }
-        }
-    }
-
-    /**
-     * Runs tweaks to the Windows registry.
-     */
-    private static void runRegistryTweaks() {
-        DebugUtil.debug("Running registry tweaks...");
-        @NotNull ConfigLoader configLoader = new ConfigLoader(FileUtil.getConfigFile("registry_tweaks.json"));
-        Map<String, Map<String, Object>> config = configLoader.getConfig();
-        @NotNull RegistryTaskRunner taskRunner = new RegistryTaskRunner(config);
-        @NotNull List<Runnable> tasks = taskRunner.getTasks();
-
-        // Execute tasks using TaskUtil.
-        TaskUtil.executeTasks(tasks);
-        DebugUtil.debug("Completed registry tweaks.");
-    }
-
-    /**
-     * Runs tweaks to the system.
-     */
-    private static void runSystemTweaks() {
-        DebugUtil.debug("Running system tweaks...");
-        @NotNull List<Runnable> tasks = new ArrayList<>();
-        @NotNull ConfigLoader configLoader = new ConfigLoader(FileUtil.getConfigFile("system_tweaks.json"));
-        Map<String, Object> config = configLoader.getConfig().get("tweaks");
-
-        // Checks if the config is null.
-        if (config == null) {
-            return;
-        }
-
-        // Fixes micro-stuttering in games by enabling the platform tick clock.
-        if (config.get("enablePlatformTickClock") != null
-                && config.get("enablePlatformTickClock").equals(Boolean.TRUE)) {
-            tasks.add(() -> {
-                CommandUtil.runCommand("bcdedit /set useplatformtick yes", true);
-                CommandUtil.runCommand("bcdedit /deletevalue useplatformclock", true);
             });
         }
 
-        // Enables scheduled defrag.
-        if (config.get("enableScheduledDefrag") != null
-                && config.get("enableScheduledDefrag").equals(Boolean.TRUE)) {
-            tasks.add(() -> CommandUtil.runCommand("schtasks /Change /ENABLE /TN \"\\Microsoft\\Windows\\Defrag\\ScheduledDefrag\"", true));
-        }
-
-        // Disables various telemetry tasks.
-        if (config.get("disableTelemetry") != null
-                && config.get("disableTelemetry").equals(Boolean.TRUE)) {
-            tasks.add(() -> {
-                CommandUtil.runCommand("schtasks /change /TN \"Microsoft\\Windows\\Application Experience\\Microsoft Compatibility Appraiser\" /disable", true);
-                CommandUtil.runCommand("schtasks /change /TN \"Microsoft\\Windows\\Application Experience\\ProgramDataUpdater\" /disable", true);
-                CommandUtil.runCommand("schtasks /change /TN \"Microsoft\\Windows\\Application Experience\\StartupAppTask\" /disable", true);
-                CommandUtil.runCommand("schtasks /change /TN \"Microsoft\\Windows\\Customer Experience Improvement Program\\Consolidator\" /disable", true);
-                CommandUtil.runCommand("schtasks /change /TN \"Microsoft\\Windows\\Customer Experience Improvement Program\\UsbCeip\" /disable", true);
-                CommandUtil.runCommand("schtasks /change /TN \"Microsoft\\Windows\\Device Information\\Device\" /disable", true);
-                CommandUtil.runCommand("schtasks /change /TN \"Microsoft\\Windows\\Windows Error Reporting\\QueueReporting\" /disable", true);
-                CommandUtil.runCommand("setx DOTNET_CLI_TELEMETRY_OPTOUT 1", true);
-                CommandUtil.runCommand("setx POWERSHELL_TELEMETRY_OPTOUT 1", true);
+        @Override
+        public void onTaskFinished(@NotNull TaskResult result, int index, int total) {
+            SwingUtilities.invokeLater(() -> {
+                showResult(result);
+                progressBar.setIndeterminate(false);
+                progressBar.setMaximum(total);
+                progressBar.setValue(index + 1);
+                progressBar.setString((index + 1) + " / " + total);
             });
         }
-
-        // Deletes the controversial 'defaultuser0' user.
-        if (config.get("removeDefaultUser0") != null
-                && config.get("removeDefaultUser0").equals(Boolean.TRUE)) {
-            tasks.add(() -> CommandUtil.runCommand("net user defaultuser0 /delete", true));
-        }
-
-        // Clears the Windows product key from registry.
-        if (config.get("clearProductKey") != null
-                && config.get("clearProductKey").equals(Boolean.TRUE)) {
-            tasks.add(() -> CommandUtil.runCommand("cscript.exe //nologo \"%SystemRoot%\\system32\\slmgr.vbs\" /cpky", true));
-        }
-
-        // Fixes network settings.
-        if (config.get("fixNetworkIssues") != null
-                && config.get("fixNetworkIssues").equals(Boolean.TRUE)) {
-            tasks.add(() -> {
-                CommandUtil.runCommand("ipconfig /flushdns", false);
-                CommandUtil.runCommand("netsh winsock reset", false);
-                CommandUtil.runCommand("netsh int ip reset", false);
-                CommandUtil.runCommand("netsh int tcp set global rss=enabled", false);
-                CommandUtil.runCommand("netsh int tcp set global autotuninglevel=normal", false);
-                CommandUtil.runCommand("netsh int tcp set global ecncapability=default", false);
-                CommandUtil.runCommand("netsh int tcp set global timestamps=enabled", false);
-
-                // Repairs broken Wi-Fi settings.
-                RegistryUtil.deleteRegistryKey(WinReg.HKEY_CLASSES_ROOT, "CLSID\\{988248f3-a1ad-49bf-9170-676cbbc36ba3}");
-                CommandUtil.runCommand("netcfg -v -u dni_dne", false);
-            });
-        }
-
-        // Re-registers ExplorerFrame.dll.
-        if (config.get("fixExplorerFrame") != null
-                && config.get("fixExplorerFrame").equals(Boolean.TRUE)) {
-            tasks.add(() -> CommandUtil.runCommand("regsvr32 /s ExplorerFrame.dll", true));
-        }
-
-        // Disables NetBios for all interfaces.
-        if (config.get("disableNetBios") != null
-                && config.get("disableNetBios").equals(Boolean.TRUE)) {
-            @NotNull String baseKeyPath = "SYSTEM\\CurrentControlSet\\services\\NetBT\\Parameters\\Interfaces";
-            @NotNull List<String> subKeys = RegistryUtil.listSubKeys(WinReg.HKEY_LOCAL_MACHINE, baseKeyPath);
-
-            for (String subKey : subKeys) {
-                @NotNull String fullPath = baseKeyPath + "\\" + subKey;
-                RegistryUtil.setRegistryIntValue(WinReg.HKEY_LOCAL_MACHINE, fullPath, "NetbiosOptions", 2);
-            }
-        }
-
-        // Resets Windows Media Player.
-        if (config.get("fixWindowsMediaPlayer") != null
-                && config.get("fixWindowsMediaPlayer").equals(Boolean.TRUE)) {
-            tasks.add(() -> {
-                CommandUtil.runCommand("regsvr32 /s jscript.dll", false);
-                CommandUtil.runCommand("regsvr32 /s vbscript.dll", true);
-            });
-        }
-
-        // Re-installs the Windows 'Get Help' app if missing.
-        if (config.get("fixMissingGetHelpApp") != null
-                && config.get("fixMissingGetHelpApp").equals(Boolean.TRUE)) {
-            tasks.add(() -> CommandUtil.runCommand("winget install --id 9PKDZBMV1H3T --source msstore" +
-                    " --accept-package-agreements --accept-source-agreements", false));
-        }
-
-        // Repairs every installed App Package by re-registering them.
-        if (config.get("fixBrokenWindowsApps") != null
-                && config.get("fixBrokenWindowsApps").equals(Boolean.TRUE)) {
-            tasks.add(() -> CommandUtil.runPowerShellCommand("Get-AppxPackage | Where-Object {"
-                    + " $_.InstallLocation -and (Test-Path $_.InstallLocation) } | ForEach-Object {"
-                    + " Add-AppxPackage -DisableDevelopmentMode -Register ($_.InstallLocation + '\\AppxManifest.xml')"
-                    + " -ErrorAction SilentlyContinue }", false));
-        }
-
-        // Execute system tasks using TaskUtil.
-        TaskUtil.executeTasks(tasks);
-        DebugUtil.debug("Completed system tweaks.");
-    }
-
-    /**
-     * Runs tweaks to Windows Defender.
-     */
-    private static void runWindowsDefenderTweaks() {
-        DebugUtil.debug("Running Windows Defender tweaks...");
-        @NotNull List<Runnable> tasks = new ArrayList<>();
-        @NotNull ConfigLoader configLoader = new ConfigLoader(FileUtil.getConfigFile("windows_defender.json"));
-        Map<String, Object> defender = configLoader.getConfig().get("windowsDefender");
-        boolean defenderRunning = ProcessUtil.isProcessRunning("MsMpEng.exe");
-
-        if (defender != null && defenderRunning) {
-            // Enables Windows Firewall for all profiles.
-            if (defender.get("enableFirewall") != null
-                    && defender.get("enableFirewall").equals(Boolean.TRUE)) {
-                tasks.add(() -> CommandUtil.getPowerShellCommandOutput("Set-NetFirewallProfile -ErrorAction SilentlyContinue -Profile Domain,Private,Public -Enabled True", true, false));
-            }
-
-            // Removes all Windows Defender exclusions.
-            if (defender.get("removeExclusions") != null
-                    && defender.get("removeExclusions").equals(Boolean.TRUE)) {
-                tasks.add(() -> {
-                    CommandUtil.getPowerShellCommandOutput("Get-MpPreference -ErrorAction SilentlyContinue | Select-Object -ExpandProperty AttackSurfaceReductionOnlyExclusions | ForEach-Object { Remove-MpPreference -AttackSurfaceReductionOnlyExclusions $_ }", true, false);
-                    CommandUtil.getPowerShellCommandOutput("Get-MpPreference -ErrorAction SilentlyContinue | Select-Object -ExpandProperty AttackSurfaceReductionRules_Actions | ForEach-Object { Remove-MpPreference -AttackSurfaceReductionRules_Actions $_ }", true, false);
-                    CommandUtil.getPowerShellCommandOutput("Get-MpPreference -ErrorAction SilentlyContinue | Select-Object -ExpandProperty AttackSurfaceReductionRules_Ids | ForEach-Object { Remove-MpPreference -AttackSurfaceReductionRules_Ids $_ }", true, false);
-                    CommandUtil.getPowerShellCommandOutput("Get-MpPreference -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ControlledFolderAccessAllowedApplications | ForEach-Object { Remove-MpPreference -ControlledFolderAccessAllowedApplications $_ }", true, false);
-                    CommandUtil.getPowerShellCommandOutput("Get-MpPreference -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ControlledFolderAccessProtectedFolders | ForEach-Object { Remove-MpPreference -ControlledFolderAccessProtectedFolders $_ }", true, false);
-                    CommandUtil.getPowerShellCommandOutput("Get-MpPreference -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ExclusionExtension | ForEach-Object { Remove-MpPreference -ExclusionExtension $_ }", true, false);
-                    CommandUtil.getPowerShellCommandOutput("Get-MpPreference -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ExclusionIpAddress | ForEach-Object { Remove-MpPreference -ExclusionIpAddress $_ }", true, false);
-                    CommandUtil.getPowerShellCommandOutput("Get-MpPreference -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ExclusionPath | ForEach-Object { Remove-MpPreference -ExclusionPath $_ }", true, false);
-                    CommandUtil.getPowerShellCommandOutput("Get-MpPreference -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ExclusionProcess | ForEach-Object { Remove-MpPreference -ExclusionProcess $_ }", true, false);
-                    CommandUtil.getPowerShellCommandOutput("Get-MpPreference -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ThreatIDDefaultAction_Actions | ForEach-Object { Remove-MpPreference -ThreatIDDefaultAction_Actions $_ }", true, false);
-                    CommandUtil.getPowerShellCommandOutput("Get-MpPreference -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ThreatIDDefaultAction_Ids | ForEach-Object { Remove-MpPreference -ThreatIDDefaultAction_Ids $_ }", true, false);
-                });
-            }
-
-            // Removes all previous Windows Defender settings.
-            if (defender.get("removePreviousSettings") != null
-                    && defender.get("removePreviousSettings").equals(Boolean.TRUE)) {
-                tasks.add(() -> CommandUtil.getPowerShellCommandOutput("Remove-MpPreference -ErrorAction SilentlyContinue"
-                        + " -AllowDatagramProcessingOnWinServer"
-                        + " -AllowNetworkProtectionDownLevel"
-                        + " -AllowNetworkProtectionOnWinServer"
-                        + " -CheckForSignaturesBeforeRunningScan"
-                        + " -CloudBlockLevel"
-                        + " -CloudExtendedTimeout"
-                        + " -DisableArchiveScanning"
-                        + " -DisableAutoExclusions"
-                        + " -DisableBehaviorMonitoring"
-                        + " -DisableBlockAtFirstSeen"
-                        + " -DisableCatchupFullScan"
-                        + " -DisableCatchupQuickScan"
-                        + " -DisableCpuThrottleOnIdleScans"
-                        + " -DisableDatagramProcessing"
-                        + " -DisableDnsOverTcpParsing"
-                        + " -DisableDnsParsing"
-                        + " -DisableEmailScanning"
-                        + " -DisableGradualRelease"
-                        + " -DisableHttpParsing"
-                        + " -DisableIOAVProtection"
-                        + " -DisableInboundConnectionFiltering"
-                        + " -DisableIntrusionPreventionSystem"
-                        + " -DisablePrivacyMode"
-                        + " -DisableRdpParsing"
-                        + " -DisableRealtimeMonitoring"
-                        + " -DisableRemovableDriveScanning"
-                        + " -DisableRestorePoint"
-                        + " -DisableScanningMappedNetworkDrivesForFullScan"
-                        + " -DisableScanningNetworkFiles"
-                        + " -DisableScriptScanning"
-                        + " -DisableSshParsing"
-                        + " -DisableTlsParsing"
-                        + " -EnableControlledFolderAccess"
-                        + " -EnableDnsSinkhole"
-                        + " -EnableFileHashComputation"
-                        + " -EnableFullScanOnBatteryPower"
-                        + " -EnableLowCpuPriority"
-                        + " -EnableNetworkProtection"
-                        + " -EngineUpdatesChannel"
-                        + " -ForceUseProxyOnly"
-                        + " -HighThreatDefaultAction"
-                        + " -LowThreatDefaultAction"
-                        + " -MAPSReporting"
-                        + " -MeteredConnectionUpdates"
-                        + " -ModerateThreatDefaultAction"
-                        + " -PUAProtection"
-                        + " -PlatformUpdatesChannel"
-                        + " -ProxyBypass"
-                        + " -ProxyPacUrl"
-                        + " -ProxyServer"
-                        + " -QuarantinePurgeItemsAfterDelay"
-                        + " -RandomizeScheduleTaskTimes"
-                        + " -RealTimeScanDirection"
-                        + " -RemediationScheduleDay"
-                        + " -RemediationScheduleTime"
-                        + " -ReportingAdditionalActionTimeOut"
-                        + " -ReportingCriticalFailureTimeOut"
-                        + " -ReportingNonCriticalTimeOut"
-                        + " -ScanAvgCPULoadFactor"
-                        + " -ScanOnlyIfIdleEnabled"
-                        + " -ScanParameters"
-                        + " -ScanPurgeItemsAfterDelay"
-                        + " -ScanScheduleDay"
-                        + " -ScanScheduleQuickScanTime"
-                        + " -ScanScheduleTime"
-                        + " -SchedulerRandomizationTime"
-                        + " -SevereThreatDefaultAction"
-                        + " -SharedSignaturesPath"
-                        + " -SignatureAuGracePeriod"
-                        + " -SignatureBlobFileSharesSources"
-                        + " -SignatureBlobUpdateInterval"
-                        + " -SignatureDefinitionUpdateFileSharesSources"
-                        + " -SignatureDisableUpdateOnStartupWithoutEngine"
-                        + " -SignatureFallbackOrder"
-                        + " -SignatureFirstAuGracePeriod"
-                        + " -SignatureScheduleDay"
-                        + " -SignatureScheduleTime"
-                        + " -SignatureUpdateCatchupInterval"
-                        + " -SignatureUpdateInterval"
-                        + " -SubmitSamplesConsent"
-                        + " -UILockdown"
-                        + " -UnknownThreatDefaultAction"
-                        + " -Force", true, false));
-            }
-
-            // Sets Windows Defender to recommended settings.
-            if (defender.get("setRecommendedSettings") != null
-                    && defender.get("setRecommendedSettings").equals(Boolean.TRUE)) {
-                tasks.add(() -> CommandUtil.getPowerShellCommandOutput("Set-MpPreference -ErrorAction SilentlyContinue"
-                        + " -CloudBlockLevel 4"
-                        + " -CloudExtendedTimeout 10"
-                        + " -DisableArchiveScanning 0"
-                        + " -DisableBehaviorMonitoring 0"
-                        + " -DisableBlockAtFirstSeen 0"
-                        + " -DisableEmailScanning 0"
-                        + " -DisableIOAVProtection 0"
-                        + " -DisableRealtimeMonitoring 0"
-                        + " -DisableRemovableDriveScanning 0"
-                        + " -DisableScanningMappedNetworkDrivesForFullScan 0"
-                        + " -DisableScanningNetworkFiles 0"
-                        + " -DisableScriptScanning 0"
-                        + " -EnableFileHashComputation 0"
-                        + " -EnableLowCpuPriority 0"
-                        + " -EnableNetworkProtection 1"
-                        + " -HighThreatDefaultAction Quarantine"
-                        + " -LowThreatDefaultAction Block"
-                        + " -MAPSReporting 2"
-                        + " -ModerateThreatDefaultAction Clean"
-                        + " -PUAProtection 1"
-                        + " -ScanAvgCPULoadFactor 50"
-                        + " -SevereThreatDefaultAction Remove"
-                        + " -SignatureBlobUpdateInterval 120"
-                        + " -SubmitSamplesConsent 3", true, false));
-            }
-
-            // Sets Windows Defender ASR rules to recommended settings.
-            if (defender.get("setRecommendedASRRules") != null
-                    && defender.get("setRecommendedASRRules").equals(Boolean.TRUE)) {
-                tasks.add(() -> {
-                    CommandUtil.getPowerShellCommandOutput("Add-MpPreference"
-                            + " -AttackSurfaceReductionRules_Ids "
-                            + "26190899-1602-49e8-8b27-eb1d0a1ce869," // ASR: Block Adobe Reader from creating child processes
-                            + "3b576869-a4ec-4529-8536-b80a7769e899," // ASR: Block all Office applications from creating child processes
-                            + "5beb7efe-fd9a-4556-801d-275e5ffc04cc," // ASR: Block executable content from email client and webmail
-                            + "75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84," // ASR: Block execution of potentially obfuscated scripts
-                            + "7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c," // ASR: Block JavaScript or VBScript from launching downloaded executable content
-                            + "92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b," // ASR: Block Office applications from creating executable content
-                            + "b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4," // ASR: Block Office applications from injecting code into other processes
-                            + "be9ba2d9-53ea-4cdc-84e5-9b1eeee46550," // ASR: Block Office communication application from creating child processes
-                            + "c1db55ab-c21a-4637-bb3f-a12568109d35," // ASR: Block persistence through WMI event subscription
-                            + "d3e037e1-3eb8-44c8-a917-57927947596d," // ASR: Block untrusted and unsigned processes that run from USB
-                            + "d4f940ab-401b-4efc-aadc-ad5f3c50688a," // ASR: Block Win32 API calls from Office macros
-                            + "e6db77e5-3df2-4cf1-b95a-636979351e5b" // ASR: Use advanced protection against ransomware
-                            + " -AttackSurfaceReductionRules_Actions Enabled", true, false);
-
-                    // Disables certain ASR rules from blocking.
-                    CommandUtil.getPowerShellCommandOutput("Add-MpPreference"
-                            + " -AttackSurfaceReductionRules_Ids "
-                            + "01443614-cd74-433a-b99e-2ecdc07bfc25," // ASR: Don't block credential stealing from the Windows local security authority subsystem
-                            + "9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2," // ASR: Don't block executable files from running unless they meet a prevalence, age, or trusted list criterion
-                            + "d1e49aac-8f56-4280-b9ba-993a6d77406c" // ASR: Don't block process creations originating from PSExec and WMI commands
-                            + " -AttackSurfaceReductionRules_Actions Disabled", true, false);
-
-                    // Disables certain ASR rules from warning.
-                    CommandUtil.getPowerShellCommandOutput("Add-MpPreference"
-                            + " -AttackSurfaceReductionRules_Ids "
-                            + "56a863a9-875e-4185-98a7-b882c64b5ce5," // ASR: Warn against abuse of exploited vulnerable signed drivers
-                            + "a8f5898e-1dc8-49a9-9878-85004b8a61e6" // ASR: Warn against Webshell creation for servers
-                            + " -AttackSurfaceReductionRules_Actions Warn", true, false);
-                });
-            }
-        }
-
-        // Execute Windows Defender tasks using TaskUtil.
-        TaskUtil.executeTasks(tasks);
-        DebugUtil.debug("Completed Windows Defender tweaks.");
-    }
-
-    /**
-     * Runs tweaks to Windows features.
-     */
-    private static void runFeaturesTweaks() {
-        DebugUtil.debug("Running Windows features tweaks...");
-        @NotNull ConfigLoader configLoader = new ConfigLoader(FileUtil.getConfigFile("features_tweaks.json"));
-        Map<String, Map<String, Object>> config = configLoader.getConfig();
-        @NotNull FeaturesTaskRunner taskRunner = new FeaturesTaskRunner(config);
-        @NotNull List<Runnable> tasks = taskRunner.getTasks();
-
-        // Execute tasks using TaskUtil.
-        TaskUtil.executeTasks(tasks);
-        DebugUtil.debug("Completed Windows features tweaks.");
-    }
-
-    /**
-     * Runs tweaks to Windows services.
-     */
-    private static void runServicesTweaks() {
-        DebugUtil.debug("Running services tweaks...");
-        @NotNull ConfigLoader configLoader = new ConfigLoader(FileUtil.getConfigFile("services_tweaks.json"));
-        Map<String, Map<String, Object>> config = configLoader.getConfig();
-        @NotNull ServicesTaskRunner taskRunner = new ServicesTaskRunner(config);
-        @NotNull List<Runnable> tasks = taskRunner.getTasks();
-
-        // Execute tasks using TaskUtil.
-        TaskUtil.executeTasks(tasks);
-        DebugUtil.debug("Completed services tweaks.");
-    }
-
-    /**
-     * Updates outdated programs using WinGet.
-     */
-    private static void updateOutdatedPrograms() {
-        DebugUtil.debug("Updating outdated programs...");
-
-        // Updates outdated programs using Winget.
-        WinGetUtil.updateAllPrograms();
-        DebugUtil.debug("Completed updating outdated programs.");
     }
 }
