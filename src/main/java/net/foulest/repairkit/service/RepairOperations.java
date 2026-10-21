@@ -491,7 +491,7 @@ public final class RepairOperations {
     // ------------------------------------------------------------------
 
     private static @NotNull StepResult runAdvancedTweaks(boolean cancelled,
-                                                         @NotNull RegistryBackup backup) {
+                                                         @Nullable RegistryBackup backup) {
         @NotNull ConfigLoader loader = config("system_tweaks.json");
         @NotNull Map<String, Object> tweaks = loader.category("advancedTweaks");
 
@@ -529,7 +529,7 @@ public final class RepairOperations {
         }
 
         if (ConfigLoader.flag(tweaks, "fixNetworkIssues", false) && !cancelled) {
-            runNetworkReset(outcome);
+            runNetworkReset(backup, outcome);
             restartRequired = true;
         }
 
@@ -547,7 +547,8 @@ public final class RepairOperations {
         return result;
     }
 
-    private static void runNetworkReset(@NotNull Outcome outcome) {
+    private static void runNetworkReset(@Nullable RegistryBackup backup,
+                                        @NotNull Outcome outcome) {
         runNetworkCommand(List.of("ipconfig.exe", "/flushdns"), outcome);
 
         @NotNull CommandResult winsock = CommandUtil.run(WindowsUtil.system32("netsh.exe"),
@@ -579,8 +580,11 @@ public final class RepairOperations {
         CommandUtil.run(WindowsUtil.system32("netsh.exe"), MEDIUM,
                 "int", "tcp", "set", "global", "timestamps=enabled");
 
-        backup.recordKeyDeletion(WinReg.HKEY_CLASSES_ROOT,
-                "CLSID\\{988248f3-a1ad-49bf-9170-676cbbc36ba3}");
+        if (backup != null) {
+            backup.recordKeyDeletion(WinReg.HKEY_CLASSES_ROOT,
+                    "CLSID\\{988248f3-a1ad-49bf-9170-676cbbc36ba3}");
+        }
+
         RegistryUtil.deleteTree(WinReg.HKEY_CLASSES_ROOT,
                 "CLSID\\{988248f3-a1ad-49bf-9170-676cbbc36ba3}");
 
@@ -608,13 +612,16 @@ public final class RepairOperations {
         }
     }
 
-    private static void disableNetBios(@NotNull RegistryBackup backup,
+    private static void disableNetBios(@Nullable RegistryBackup backup,
                                        @NotNull Outcome outcome) {
         @NotNull String baseKey = "SYSTEM\\CurrentControlSet\\services\\NetBT\\Parameters\\Interfaces";
 
         for (String subKey : RegistryUtil.listSubKeys(WinReg.HKEY_LOCAL_MACHINE, baseKey)) {
             @NotNull String path = baseKey + "\\" + subKey;
-            backup.recordValue(WinReg.HKEY_LOCAL_MACHINE, path, "NetbiosOptions");
+
+            if (backup != null) {
+                backup.recordValue(WinReg.HKEY_LOCAL_MACHINE, path, "NetbiosOptions");
+            }
 
             try {
                 RegistryUtil.setInt(WinReg.HKEY_LOCAL_MACHINE, path, "NetbiosOptions", 2);
