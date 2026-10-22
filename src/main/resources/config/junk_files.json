@@ -1,10 +1,11 @@
 {
   "junkFiles": {
-    "emptyRecycleBin": true,
+    "enabled": true,
+    "emptyRecycleBin": false,
     "cleanUserTempFiles": true,
     "cleanSystemTempFiles": true,
-    "cleanWithEverything": true,
-    "excludedPaths": [
-    ]
+    "olderThanDays": 7,
+    "additionalPaths": [],
+    "excludedPaths": []
   }
 }

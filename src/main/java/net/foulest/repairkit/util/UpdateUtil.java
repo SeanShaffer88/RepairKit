@@ -17,9 +17,9 @@
  */
 package net.foulest.repairkit.util;
 
-import lombok.AccessLevel;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import net.foulest.repairkit.Messages;
 import net.foulest.repairkit.RepairKit;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -30,132 +30,198 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.prefs.Preferences;
 
 /**
- * Utility class for updating the program.
+ * Update checking.
+ * <p>
+ * Release tags are compared as semantic versions, not strings. The old
+ * implementation used {@code tag_name.equals(version)}, which offered a
+ * "downgrade" whenever the repository was ahead of the running build and
+ * ignored every tag with a {@code v} prefix.
  *
  * @author Foulest
  */
-@Data
-@NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class UpdateUtil {
 
-    private static final String REPO_API_URL = "https://api.github.com/repos/Foulest/RepairKit/releases/latest";
-    private static final String DOWNLOAD_URL = "https://github.com/Foulest/RepairKit/releases/latest";
+    private static final String RELEASES_API =
+            "https://api.github.com/repos/Foulest/RepairKit/releases/latest";
+    private static final String RELEASES_PAGE =
+            "https://github.com/Foulest/RepairKit/releases/latest";
+    private static final String SKIPPED_VERSION_KEY = "skippedVersion";
+
+    private UpdateUtil() {
+        throw new UnsupportedOperationException("Utility class");
+    }
 
     /**
-     * Checks for updates and logs the result.
+     * Checks for a newer release and offers it to the user.
+     * <p>
+     * Safe to call from the event dispatch thread; the network request runs on
+     * a background thread and the dialog is shown on the event dispatch thread.
      */
     public static void checkForUpdates() {
-        String currentVersion = getVersionFromProperties();
+        @Nullable Version current = currentVersion();
+
+        if (current == null) {
+            return;
+        }
 
         CompletableFuture
-                .supplyAsync(UpdateUtil::getLatestReleaseVersion)
-                .thenAccept(latestVersion -> {
-                    if (latestVersion == null || latestVersion.equals(currentVersion)) {
+                .supplyAsync(UpdateUtil::fetchLatestRelease)
+                .thenAccept(release -> {
+                    if (release == null || release.version() == null) {
                         return;
                     }
 
-                    SwingUtilities.invokeLater(() -> {
-                        SoundUtil.playSound(ConstantUtil.EXCLAMATION_SOUND);
+                    if (release.prerelease() || !release.version().isNewerThan(current)) {
+                        return;
+                    }
 
-                        int result = JOptionPane.showConfirmDialog(
-                                null,
-                                "A new version of RepairKit is available. Would you like to download it?",
-                                "Update Available",
-                                JOptionPane.YES_NO_OPTION
-                        );
+                    @NotNull String skipped = skippedVersion();
 
-                        if (result == JOptionPane.YES_OPTION) {
-                            CommandUtil.runCommand("start \"\" \"" + DOWNLOAD_URL + "\"", true);
-                        }
-                    });
-                }).exceptionally(ex -> {
-                    DebugUtil.warn("Async update check failed", ex);
+                    if (release.version().toString().equals(skipped)) {
+                        DebugUtil.debug("Update " + release.version() + " was skipped by the user.");
+                        return;
+                    }
+
+                    SwingUtilities.invokeLater(() -> showUpdateDialog(release));
+                })
+                .exceptionally(ex -> {
+                    DebugUtil.warn("Update check failed", ex);
                     return null;
                 });
     }
 
+    private static void showUpdateDialog(@NotNull Release release) {
+        SoundUtil.playSound(ConstantUtil.EXCLAMATION_SOUND);
+
+        Object[] options = {
+                Messages.get("common.yes"),
+                Messages.get("update.skip"),
+                Messages.get("common.no")
+        };
+
+        int choice = JOptionPane.showOptionDialog(null,
+                Messages.get("update.available.message", release.version(), currentVersion()),
+                Messages.get("update.available.title"),
+                JOptionPane.YES_NO_CANCEL_OPTION,
+                JOptionPane.INFORMATION_MESSAGE,
+                null, options, options[0]);
+
+        if (choice == 0) {
+            WindowsUtil.openUri(RELEASES_PAGE);
+        } else if (choice == 1) {
+            saveSkippedVersion(release.version().toString());
+        }
+    }
+
     /**
-     * Fetches the latest release version from the GitHub API.
+     * Fetches the latest release metadata.
      *
-     * @return The latest release version or null if an error occurred.
+     * @return the release, or {@code null} when it cannot be read
      */
-    @SuppressWarnings("OverlyBroadCatchBlock")
-    private static @Nullable String getLatestReleaseVersion() {
+    private static @Nullable Release fetchLatestRelease() {
+        HttpURLConnection connection = null;
+
         try {
-            URL url = new URL(REPO_API_URL);
-            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection = (HttpURLConnection) URI.create(RELEASES_API).toURL().openConnection();
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(5000);
             connection.setReadTimeout(5000);
+            connection.setRequestProperty("Accept", "application/vnd.github+json");
+            connection.setRequestProperty("User-Agent", "RepairKit/" + versionString());
 
-            try (InputStream inputStream = connection.getInputStream();
-                 BufferedReader in = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
-                StringBuilder content = new StringBuilder();
+            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                DebugUtil.warn("Update check returned HTTP " + connection.getResponseCode(), null);
+                return null;
+            }
+
+            @NotNull StringBuilder body = new StringBuilder();
+
+            try (InputStream input = connection.getInputStream();
+                 BufferedReader reader = new BufferedReader(
+                         new InputStreamReader(input, StandardCharsets.UTF_8))) {
                 String line;
 
-                while ((line = in.readLine()) != null) {
-                    content.append(line);
-                }
+                while ((line = reader.readLine()) != null) {
+                    body.append(line);
 
-                String response = content.toString();
-                return extractVersion(response);
-            } finally {
+                    if (body.length() > 256 * 1024) {
+                        return null;
+                    }
+                }
+            }
+
+            JsonObject json = JsonParser.parseString(body.toString()).getAsJsonObject();
+            String tag = json.has("tag_name") && !json.get("tag_name").isJsonNull()
+                    ? json.get("tag_name").getAsString()
+                    : null;
+            boolean prerelease = json.has("prerelease") && json.get("prerelease").getAsBoolean();
+
+            return new Release(Version.parse(tag), prerelease);
+        } catch (IOException | RuntimeException ex) {
+            DebugUtil.warn("Failed to read the latest release", ex);
+            return null;
+        } finally {
+            if (connection != null) {
                 connection.disconnect();
             }
-        } catch (Exception ex) {
-            DebugUtil.warn("Failed to get latest release version", ex);
-            return null;
         }
     }
 
     /**
-     * Extracts the version from the JSON response.
+     * Gets the version of this build.
      *
-     * @param jsonResponse The JSON response.
-     * @return The version or null if not found.
+     * @return the version, or {@code null} when the version resource is missing
      */
-    private static @Nullable String extractVersion(@NotNull CharSequence jsonResponse) {
-        @NotNull String versionRegex = "\"tag_name\":\"(.*?)\"";
-        @NotNull Pattern pattern = Pattern.compile(versionRegex);
-        @NotNull Matcher matcher = pattern.matcher(jsonResponse);
-
-        if (matcher.find()) {
-            return matcher.group(1);
-        }
-        return null;
+    public static @Nullable Version currentVersion() {
+        return Version.parse(versionString());
     }
 
     /**
-     * Gets the version of the program.
+     * Gets the version string of this build.
      *
-     * @return The version of the program.
+     * @return the version string, or {@code unknown}
      */
-    public static String getVersionFromProperties() {
-        DebugUtil.debug("Getting version from properties...");
+    public static @NotNull String versionString() {
         @NotNull Properties properties = new Properties();
 
-        try (@Nullable InputStream input = RepairKit.class.getResourceAsStream("/version.properties")) {
+        try (InputStream input = RepairKit.class.getResourceAsStream("/version.properties")) {
             if (input == null) {
-                JOptionPane.showMessageDialog(null,
-                        "Failed to load version properties.",
-                        "Error", JOptionPane.ERROR_MESSAGE);
-                return "Unknown";
+                DebugUtil.warn("version.properties is missing from the build", null);
+                return "unknown";
             }
 
-            DebugUtil.debug("Loading properties...");
             properties.load(input);
-            return properties.getProperty("version");
+            return properties.getProperty("version", "unknown");
         } catch (IOException ex) {
-            DebugUtil.warn("Failed to get version from properties", ex);
+            DebugUtil.warn("Failed to read version.properties", ex);
+            return "unknown";
         }
-        return "Unknown";
+    }
+
+    private static @NotNull String skippedVersion() {
+        try {
+            return Preferences.userNodeForPackage(UpdateUtil.class)
+                    .get(SKIPPED_VERSION_KEY, "");
+        } catch (RuntimeException ex) {
+            return "";
+        }
+    }
+
+    private static void saveSkippedVersion(@NotNull String version) {
+        try {
+            Preferences.userNodeForPackage(UpdateUtil.class).put(SKIPPED_VERSION_KEY, version);
+        } catch (RuntimeException ex) {
+            DebugUtil.warn("Failed to remember the skipped version", ex);
+        }
+    }
+
+    private record Release(@Nullable Version version, boolean prerelease) {
     }
 }

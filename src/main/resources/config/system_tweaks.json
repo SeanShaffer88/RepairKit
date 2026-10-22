@@ -1,15 +1,17 @@
 {
   "tweaks": {
-    "enablePlatformTickClock": true,
     "enableScheduledDefrag": true,
     "disableTelemetry": true,
     "removeDefaultUser0": true,
-    "clearProductKey": true,
-    "fixNetworkIssues": true,
     "fixExplorerFrame": true,
-    "disableNetBios": true,
     "fixWindowsMediaPlayer": true,
     "fixMissingGetHelpApp": true,
     "fixBrokenWindowsApps": true
+  },
+  "advancedTweaks": {
+    "enablePlatformTickClock": false,
+    "clearProductKey": false,
+    "fixNetworkIssues": false,
+    "disableNetBios": false
   }
 }

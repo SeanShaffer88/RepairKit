@@ -17,122 +17,151 @@
  */
 package net.foulest.repairkit.util.config.tasks.types;
 
+import com.sun.jna.platform.win32.WinReg;
+import com.sun.jna.platform.win32.Winsvc;
+import net.foulest.repairkit.model.RepairTask;
+import net.foulest.repairkit.model.RiskLevel;
+import net.foulest.repairkit.model.StepResult;
+import net.foulest.repairkit.util.CommandResult;
 import net.foulest.repairkit.util.CommandUtil;
 import net.foulest.repairkit.util.DebugUtil;
-import net.foulest.repairkit.util.config.tasks.AbstractTaskRunner;
+import net.foulest.repairkit.util.ProcessUtil;
+import net.foulest.repairkit.util.RegistryBackup;
+import net.foulest.repairkit.util.WindowsUtil;
+import net.foulest.repairkit.util.config.tasks.ConfigEntries;
+import net.foulest.repairkit.util.config.tasks.ConfigTaskRunner;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.OptionalInt;
 
 /**
- * The task runner for modifying Windows services.
+ * Changes Windows service start types.
+ * <p>
+ * Every {@code sc config} call in the previous implementation omitted the space
+ * after {@code =} ({@code start=disabled}), which {@code sc.exe} rejects; the
+ * command failed silently because exit codes were ignored. The argument list
+ * here separates {@code start=} and the value, checks the exit code, and records
+ * the previous start type in the registry backup.
  *
  * @author Foulest
  */
-public class ServicesTaskRunner extends AbstractTaskRunner {
+public class ServicesTaskRunner implements ConfigTaskRunner {
+
+    private static final Duration SC_TIMEOUT = Duration.ofSeconds(60);
+
+    private final Map<String, Map<String, Object>> config;
+    private final @Nullable RegistryBackup backup;
 
     /**
-     * Constructs a new task runner instance.
+     * Creates a runner.
      *
-     * @param config The JSON config instance
+     * @param config the parsed configuration
+     * @param backup the registry backup, may be {@code null}
      */
-    public ServicesTaskRunner(@NotNull Map<String, Map<String, Object>> config) {
-        super(config);
+    public ServicesTaskRunner(@NotNull Map<String, Map<String, Object>> config,
+                              @Nullable RegistryBackup backup) {
+        this.config = config;
+        this.backup = backup;
     }
 
-    @NotNull
     @Override
-    @SuppressWarnings("unchecked")
-    protected List<Runnable> createTasks(@NotNull Map<String, Object> entries) {
-        @NotNull List<Runnable> tasks = new ArrayList<>();
-        Map<String, Object> values = (Map<String, Object>) entries.get("values");
+    public @NotNull List<RepairTask> getTasks() {
+        @NotNull List<RepairTask> tasks = new ArrayList<>();
+        @NotNull Map<String, Object> values = ConfigEntries.values(config.getOrDefault("services", Map.of()));
 
-        values.forEach((key, obj) -> {
-            @NotNull Runnable task = () -> {
-                ServiceAction action;
+        values.forEach((serviceName, action) -> {
+            if (!ProcessUtil.isValidServiceName(serviceName)) {
+                DebugUtil.warn("Skipped an invalid service name: " + serviceName, null);
+                return;
+            }
 
-                if (obj instanceof String value) {
-                    switch (value) {
-                        case "boot":
-                            action = ServiceAction.BOOT;
-                            break;
-                        case "system":
-                            action = ServiceAction.SYSTEM;
-                            break;
-                        case "auto":
-                            action = ServiceAction.AUTO;
-                            break;
-                        case "demand":
-                            action = ServiceAction.DEMAND;
-                            break;
-                        case "disabled":
-                            action = ServiceAction.DISABLED;
-                            break;
-                        case "delayed-auto":
-                            action = ServiceAction.DELAYED_AUTO;
-                            break;
-                        default:
-                            DebugUtil.debug("Invalid value: " + value);
-                            return;
-                    }
-                } else {
-                    DebugUtil.debug("Invalid value: " + obj);
-                    return;
-                }
+            if (!(action instanceof String actionName)) {
+                DebugUtil.warn("Skipped a service with a non-string action: " + serviceName, null);
+                return;
+            }
 
-                switch (action) {
-                    case BOOT:
-                        DebugUtil.debug("Setting service to boot: " + key);
-                        CommandUtil.runCommand("sc config \"" + key + "\" start=boot", true);
-                        break;
+            @NotNull String scAction = actionName.toLowerCase(Locale.ROOT);
 
-                    case SYSTEM:
-                        DebugUtil.debug("Setting service to system: " + key);
-                        CommandUtil.runCommand("sc config \"" + key + "\" start=system", true);
-                        break;
+            if (!List.of("boot", "system", "auto", "demand", "disabled", "delayed-auto")
+                    .contains(scAction)) {
+                DebugUtil.warn("Skipped a service with an unknown action: " + actionName, null);
+                return;
+            }
 
-                    case AUTO:
-                        DebugUtil.debug("Setting service to auto: " + key);
-                        CommandUtil.runCommand("sc config \"" + key + "\" start=auto", true);
-                        break;
-
-                    case DEMAND:
-                        DebugUtil.debug("Setting service to demand: " + key);
-                        CommandUtil.runCommand("sc config \"" + key + "\" start=demand", true);
-                        break;
-
-                    case DISABLED:
-                        DebugUtil.debug("Setting service to disabled: " + key);
-                        CommandUtil.runCommand("sc stop \"" + key + "\"", true);
-                        CommandUtil.runCommand("sc config \"" + key + "\" start=disabled", true);
-                        break;
-
-                    case DELAYED_AUTO:
-                        DebugUtil.debug("Setting service to delayed-auto: " + key);
-                        CommandUtil.runCommand("sc config \"" + key + "\" start=delayed-auto", true);
-                        break;
-
-                    default:
-                        break;
-                }
-            };
-
-            tasks.add(task);
+            @NotNull String title = "Service: " + serviceName;
+            @NotNull String description = "Set the start type to " + scAction + ".";
+            tasks.add(new RepairTask("service." + serviceName, title, description,
+                    RiskLevel.MODERATE, true,
+                    token -> apply(serviceName, scAction, token.isCancelled())));
         });
+
         return tasks;
     }
 
-    /**
-     * Represents the service action.
-     */
-    private enum ServiceAction {
-        BOOT,
-        SYSTEM,
-        AUTO,
-        DEMAND,
-        DISABLED,
-        DELAYED_AUTO
+    private @NotNull StepResult apply(@NotNull String serviceName, @NotNull String action,
+                                      boolean cancelled) {
+        if (cancelled) {
+            return StepResult.cancelled();
+        }
+
+        OptionalInt state = ProcessUtil.serviceState(serviceName);
+
+        if (state.isEmpty()) {
+            return StepResult.skipped("The service is not installed.");
+        }
+
+        @NotNull String registryPath = "SYSTEM\\CurrentControlSet\\Services\\" + serviceName;
+
+        if (backup != null) {
+            backup.recordValue(WinReg.HKEY_LOCAL_MACHINE, registryPath, "Start");
+        }
+
+        if (action.equals("disabled")) {
+            @NotNull CommandResult stop = CommandUtil.run(WindowsUtil.system32("sc.exe"),
+                    SC_TIMEOUT, "stop", serviceName);
+
+            if (!stop.succeeded()) {
+                DebugUtil.debug("sc stop " + serviceName + " returned " + stop.exitCode()
+                        + " (the service may already be stopped)");
+            }
+
+            waitForStop(serviceName);
+        }
+
+        @NotNull CommandResult configResult = CommandUtil.run(WindowsUtil.system32("sc.exe"),
+                SC_TIMEOUT, "config", serviceName, "start=", action);
+
+        if (!configResult.succeeded()) {
+            return StepResult.failed("sc config failed with exit " + configResult.exitCode()
+                    + ": " + configResult.tail(3));
+        }
+
+        OptionalInt newStartType = ProcessUtil.serviceStartType(serviceName);
+        return StepResult.ok("Start type set to " + action
+                + (newStartType.isPresent() ? " (Start=" + newStartType.getAsInt() + ")" : "")
+                + ". Previous state: " + ProcessUtil.describeState(state.getAsInt()) + ".");
+    }
+
+    private static void waitForStop(@NotNull String serviceName) {
+        for (int attempt = 0; attempt < 30; attempt++) {
+            if (ProcessUtil.serviceState(serviceName).orElse(-1) == Winsvc.SERVICE_STOPPED) {
+                return;
+            }
+
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+
+        DebugUtil.warn("Service did not stop within 15 seconds: " + serviceName, null);
     }
 }

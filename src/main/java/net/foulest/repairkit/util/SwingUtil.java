@@ -17,272 +17,384 @@
  */
 package net.foulest.repairkit.util;
 
-import lombok.AccessLevel;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-import net.foulest.repairkit.RepairKit;
-import org.jetbrains.annotations.Contract;
+import net.foulest.repairkit.Messages;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import javax.swing.*;
+import javax.swing.border.EmptyBorder;
 import java.awt.*;
-import java.awt.event.MouseAdapter;
-import java.awt.event.MouseEvent;
-import java.awt.font.TextAttribute;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.awt.event.KeyEvent;
+import java.awt.image.BufferedImage;
 
 /**
- * Utility class for Swing operations.
+ * Shared Swing helpers.
+ * <p>
+ * The UI uses the platform look and feel and the system font rather than a
+ * hard-coded Arial and absolute pixel positions. Components keep their default
+ * focus painting, expose accessible names, and are reachable with the keyboard.
  *
  * @author Foulest
  */
-@Data
-@NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class SwingUtil {
 
-    /**
-     * Creates an action button without a tooltip.
-     *
-     * @param buttonText      Text to display on the button.
-     * @param bounds          Bounds of the button.
-     * @param backgroundColor Background color of the button.
-     * @param action          Action to run when the button is clicked.
-     * @return The created button.
-     * @see #createActionButton(String, String, Rectangle, Color, Runnable)
-     */
-    public static @NotNull JButton createActionButton(String buttonText, @NotNull Rectangle bounds,
-                                                      Color backgroundColor, @NotNull Runnable action) {
-        return createActionButton(buttonText, "", bounds, backgroundColor, action);
+    /** Brand blue; chosen so white text meets WCAG AA contrast. */
+    private static final Color BRAND = new Color(0, 90, 158);
+    private static final Color BRAND_HOVER = new Color(0, 62, 110);
+    private static final Color LINK = new Color(0, 90, 158);
+
+    private SwingUtil() {
+        throw new UnsupportedOperationException("Utility class");
     }
 
     /**
-     * Creates an action button.
-     *
-     * @param buttonText      Text to display on the button.
-     * @param toolTipText     Text to display when hovering over the button.
-     * @param bounds          Bounds of the button.
-     * @param backgroundColor Background color of the button.
-     * @param action          Action to run when the button is clicked.
-     * @return The created button.
+     * Applies the system look and feel.
      */
-    @SuppressWarnings("NestedMethodCall")
-    public static @NotNull JButton createActionButton(String buttonText, @NotNull String toolTipText, @NotNull Rectangle bounds,
-                                                      Color backgroundColor, @NotNull Runnable action) {
-        @NotNull JButton button = new JButton(buttonText);
-
-        if (!toolTipText.isEmpty()) {
-            button.setToolTipText(toolTipText);
+    public static void installLookAndFeel() {
+        try {
+            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+        } catch (ClassNotFoundException | InstantiationException
+                 | IllegalAccessException | UnsupportedLookAndFeelException ex) {
+            DebugUtil.warn("Failed to set the system look and feel", ex);
         }
 
-        button.setBounds(bounds);
-        button.setBackground(backgroundColor);
+        // Keep animations off for users who disable them in Windows.
+        UIManager.put("Button.defaultButtonFollowsFocus", Boolean.TRUE);
+    }
 
-        button.addActionListener(actionEvent -> new Thread(() -> {
-            try {
-                action.run();
-            } catch (RuntimeException ex) {
-                DebugUtil.warn("Failed to run action", ex);
-            }
-        }).start());
+    /**
+     * Gets the base UI font at a given size.
+     *
+     * @param style the font style
+     * @param size  the font size, or {@code 0} to use the platform default
+     * @return the font
+     */
+    public static @NotNull Font font(int style, float size) {
+        Font base = UIManager.getFont("Label.font");
+
+        if (base == null) {
+            base = new Font(Font.SANS_SERIF, Font.PLAIN, 12);
+        }
+
+        float actualSize = size > 0 ? size : base.getSize2D();
+        return base.deriveFont(style, actualSize);
+    }
+
+    /**
+     * Creates a large title label.
+     *
+     * @param text the text
+     * @return the label
+     */
+    public static @NotNull JLabel title(@NotNull String text) {
+        @NotNull JLabel label = new JLabel(text);
+        label.setFont(font(Font.BOLD, 20));
+        label.setBorder(new EmptyBorder(0, 0, 8, 0));
+        return label;
+    }
+
+    /**
+     * Creates a section heading.
+     *
+     * @param text the text
+     * @return the label
+     */
+    public static @NotNull JLabel heading(@NotNull String text) {
+        @NotNull JLabel label = new JLabel(text);
+        label.setFont(font(Font.BOLD, 15));
+        return label;
+    }
+
+    /**
+     * Creates a wrapped description label.
+     *
+     * @param text  the text
+     * @param width the wrap width in pixels
+     * @return the label
+     */
+    public static @NotNull JLabel description(@NotNull String text, int width) {
+        @NotNull JLabel label = new JLabel("<html><body style='width:" + width + "px'>"
+                + escapeHtml(text) + "</body></html>");
+        label.setFont(font(Font.PLAIN, 13));
+        return label;
+    }
+
+    /**
+     * Creates a standard button with an accessible name and tooltip.
+     *
+     * @param text    the button text
+     * @param tooltip the tooltip, may be empty
+     * @param action  the action to run on click
+     * @return the button
+     */
+    public static @NotNull JButton button(@NotNull String text, @NotNull String tooltip,
+                                          @NotNull Runnable action) {
+        @NotNull JButton button = new JButton(text);
+        configureButton(button, tooltip, action);
         return button;
     }
 
     /**
-     * Launches an application without launch arguments.
+     * Creates a primary action button.
      *
-     * @param appResource    The name of the application's resource.
-     * @param appExecutable  The name of the application's executable.
-     * @param isZipped       Whether the application is zipped or not.
-     * @param extractionPath The path to extract the application to.
-     * @see #launchApplication(String, String, CharSequence, boolean, String)
+     * @param text    the button text
+     * @param tooltip the tooltip
+     * @param action  the action
+     * @return the button
      */
-    public static void launchApplication(String appResource, String appExecutable,
-                                         boolean isZipped, @NotNull String extractionPath) {
-        launchApplication(appResource, appExecutable, "", isZipped, extractionPath);
+    public static @NotNull JButton primaryButton(@NotNull String text, @NotNull String tooltip,
+                                                 @NotNull Runnable action) {
+        @NotNull JButton button = button(text, tooltip, action);
+        button.setFont(font(Font.BOLD, 13));
+        return button;
     }
 
     /**
-     * Launches an application.
+     * Creates a toggle button used for the banner navigation.
      *
-     * @param appResource    The name of the application's resource.
-     * @param appExecutable  The name of the application's executable.
-     * @param isZipped       Whether the application is zipped or not.
-     * @param extractionPath The path to extract the application to.
-     * @param launchArgs     The arguments to launch the application with.
+     * @param text    the button text
+     * @param tooltip the tooltip
+     * @param action  the action
+     * @return the toggle button
      */
-    @SuppressWarnings("SameParameterValue")
-    static void launchApplication(String appResource, String appExecutable,
-                                  @NotNull CharSequence launchArgs, boolean isZipped, @NotNull String extractionPath) {
-        @NotNull Path path = Paths.get(extractionPath, appExecutable);
+    public static @NotNull JToggleButton navigationButton(@NotNull String text,
+                                                          @NotNull String tooltip,
+                                                          @NotNull Runnable action) {
+        @NotNull JToggleButton button = new JToggleButton(text);
+        button.setToolTipText(tooltip);
+        button.setOpaque(true);
+        button.setContentAreaFilled(true);
+        button.setBorderPainted(false);
+        button.setFocusPainted(true);
+        button.setForeground(Color.WHITE);
+        button.setBackground(BRAND);
+        button.setFont(font(Font.BOLD, 14));
+        applyMnemonic(button);
+        button.getAccessibleContext().setAccessibleName(text);
+        button.getAccessibleContext().setAccessibleDescription(tooltip);
+        button.addActionListener(event -> action.run());
+        button.getModel().addChangeListener(event -> {
+            if (button.getModel().isRollover()) {
+                button.setBackground(BRAND_HOVER);
+            } else if (button.isSelected()) {
+                button.setBackground(BRAND_HOVER);
+            } else {
+                button.setBackground(BRAND);
+            }
+        });
+        return button;
+    }
 
-        synchronized (RepairKit.class) {
-            if (!Files.exists(path)) {
-                try (@Nullable InputStream input = RepairKit.class.getClassLoader().getResourceAsStream("bin/" + appResource)) {
-                    if (input == null) {
-                        JOptionPane.showMessageDialog(null,
-                                "Failed to load application: " + appResource,
-                                "Error", JOptionPane.ERROR_MESSAGE);
-                        return;
-                    }
+    private static void configureButton(@NotNull JButton button, @NotNull String tooltip,
+                                        @NotNull Runnable action) {
+        if (!tooltip.isBlank()) {
+            button.setToolTipText(tooltip);
+            button.getAccessibleContext().setAccessibleDescription(tooltip);
+        }
 
-                    FileUtil.saveFile(input, FileUtil.tempDirectory + "\\" + appResource, false);
-                } catch (IOException ex) {
-                    DebugUtil.warn("Failed to save application: " + appResource, ex);
-                }
+        applyMnemonic(button);
+        button.getAccessibleContext().setAccessibleName(button.getText());
+        button.addActionListener(event -> action.run());
+    }
 
-                if (isZipped) {
-                    FileUtil.unzipFile(FileUtil.tempDirectory + "\\" + appResource, extractionPath);
-                }
+    /**
+     * Assigns an Alt mnemonic based on the first letter of the button text.
+     *
+     * @param button the button
+     */
+    private static void applyMnemonic(@NotNull AbstractButton button) {
+        @NotNull String text = button.getText();
+
+        for (int index = 0; index < text.length(); index++) {
+            char character = text.charAt(index);
+
+            if (Character.isLetterOrDigit(character)) {
+                button.setMnemonic(KeyEvent.getExtendedKeyCodeForChar(character));
+                button.setDisplayedMnemonicIndex(index);
+                return;
             }
         }
+    }
 
-        boolean launchArgsEmpty = launchArgs.isEmpty();
+    /**
+     * Creates a link-styled button that is keyboard accessible.
+     *
+     * @param text   the link text
+     * @param action the action
+     * @return the button
+     */
+    public static @NotNull JButton linkButton(@NotNull String text, @NotNull Runnable action) {
+        @NotNull JButton button = new JButton(text);
+        button.setBorderPainted(false);
+        button.setContentAreaFilled(false);
+        button.setOpaque(false);
+        button.setForeground(LINK);
+        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        button.setFont(font(Font.PLAIN, 13));
+        button.setFocusPainted(true);
+        applyMnemonic(button);
+        button.getAccessibleContext().setAccessibleName(text);
+        button.addActionListener(event -> action.run());
+        return button;
+    }
 
-        @NotNull List<String> commandLine = new ArrayList<>();
-        commandLine.add(path.toString());
+    /**
+     * Creates a white link for use on the blue banner.
+     *
+     * @param text   the link text
+     * @param action the action
+     * @return the button
+     */
+    public static @NotNull JButton bannerLink(@NotNull String text, @NotNull Runnable action) {
+        @NotNull JButton button = new JButton(text);
+        button.setBorderPainted(false);
+        button.setContentAreaFilled(false);
+        button.setOpaque(false);
+        button.setForeground(Color.WHITE);
+        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        button.setFont(font(Font.PLAIN, 13));
+        button.setFocusPainted(true);
+        applyMnemonic(button);
+        button.getAccessibleContext().setAccessibleName(text);
+        button.addActionListener(event -> action.run());
+        return button;
+    }
 
-        if (!launchArgsEmpty) {
-            commandLine.addAll(Arrays.asList(launchArgs.toString().trim().split("\\s+")));
+    /**
+     * Opens a URI with the Windows shell, reporting failures to the user.
+     *
+     * @param parent the parent component, may be {@code null}
+     * @param uri    the URI
+     */
+    public static void openUri(@Nullable Component parent, @NotNull String uri) {
+        if (!WindowsUtil.openUri(uri)) {
+            error(parent, Messages.get("common.error"),
+                    Messages.get("common.openFailed", uri));
+        }
+    }
+
+    /**
+     * Shows an error dialog on the event dispatch thread.
+     *
+     * @param parent  the parent component, may be {@code null}
+     * @param title   the dialog title
+     * @param message the message
+     */
+    public static void error(@Nullable Component parent, @NotNull String title,
+                             @NotNull String message) {
+        runOnEdt(() -> {
+            SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
+            JOptionPane.showMessageDialog(parent, message, title, JOptionPane.ERROR_MESSAGE);
+        });
+    }
+
+    /**
+     * Shows a warning dialog on the event dispatch thread.
+     *
+     * @param parent  the parent component
+     * @param title   the dialog title
+     * @param message the message
+     */
+    public static void warning(@Nullable Component parent, @NotNull String title,
+                               @NotNull String message) {
+        runOnEdt(() -> JOptionPane.showMessageDialog(parent, message, title,
+                JOptionPane.WARNING_MESSAGE));
+    }
+
+    /**
+     * Shows an informational dialog on the event dispatch thread.
+     *
+     * @param parent  the parent component
+     * @param title   the dialog title
+     * @param message the message
+     */
+    public static void info(@Nullable Component parent, @NotNull String title,
+                            @NotNull String message) {
+        runOnEdt(() -> JOptionPane.showMessageDialog(parent, message, title,
+                JOptionPane.INFORMATION_MESSAGE));
+    }
+
+    /**
+     * Runs code on the event dispatch thread, immediately when already there.
+     *
+     * @param runnable the code
+     */
+    public static void runOnEdt(@NotNull Runnable runnable) {
+        if (SwingUtilities.isEventDispatchThread()) {
+            runnable.run();
+        } else {
+            SwingUtilities.invokeLater(runnable);
+        }
+    }
+
+    /**
+     * Wraps a component in a scroll pane with sensible scrolling.
+     *
+     * @param component the component
+     * @return the scroll pane
+     */
+    public static @NotNull JScrollPane scroll(@NotNull Component component) {
+        @NotNull JScrollPane pane = new JScrollPane(component);
+        pane.setBorder(null);
+        pane.getVerticalScrollBar().setUnitIncrement(16);
+        pane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        return pane;
+    }
+
+    /**
+     * Gets a theme-appropriate border color.
+     *
+     * @return the border color
+     */
+    public static @NotNull Color borderColor() {
+        @Nullable Color color = UIManager.getColor("Component.borderColor");
+
+        if (color == null) {
+            color = UIManager.getColor("controlShadow");
         }
 
-        DebugUtil.debug("Launching application: " + String.join(" ", commandLine));
+        return color == null ? Color.GRAY : color;
+    }
+
+    /**
+     * Scales an icon to a square size.
+     *
+     * @param icon the icon
+     * @param size the target size in pixels
+     * @return the scaled icon
+     */
+    public static @NotNull ImageIcon scale(@NotNull ImageIcon icon, int size) {
+        Image image = icon.getImage();
+
+        if (image == null) {
+            return icon;
+        }
+
+        @NotNull BufferedImage scaled = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = scaled.createGraphics();
 
         try {
-            @NotNull ProcessBuilder processBuilder = new ProcessBuilder(commandLine);
-            processBuilder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
-            processBuilder.redirectError(ProcessBuilder.Redirect.DISCARD);
-            processBuilder.start();
-        } catch (IOException ex) {
-            DebugUtil.warn("Failed to launch application: " + path, ex);
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                    RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                    RenderingHints.VALUE_ANTIALIAS_ON);
+            graphics.drawImage(image, 0, 0, size, size, null);
+        } finally {
+            graphics.dispose();
         }
+
+        return new ImageIcon(scaled);
     }
 
     /**
-     * Sets up an application icon.
+     * Escapes text for use in a Swing HTML label.
      *
-     * @param baseHeight The base height of the panel.
-     * @param baseWidth  The base width of the panel.
-     * @param imageIcon  The icon to display.
-     * @param panel      The panel to add the icon to.
+     * @param text the text
+     * @return the escaped text
      */
-    public static void setupAppIcon(int baseHeight, int baseWidth,
-                                    @NotNull ImageIcon imageIcon,
-                                    @NotNull JPanel panel) {
-        Image scaledImage = imageIcon.getImage().getScaledInstance(35, 35, Image.SCALE_SMOOTH);
-        imageIcon = new ImageIcon(scaledImage);
-
-        @NotNull JLabel iconLabel = new JLabel(imageIcon);
-        iconLabel.setBounds(baseWidth, baseHeight + 7, 35, 35);
-        panel.add(iconLabel);
-        iconLabel.repaint();
-    }
-
-    /**
-     * Creates a hyperlink label that opens a URL when clicked.
-     *
-     * @param label The label to make a hyperlink.
-     * @param url   The URL to open when the label is clicked.
-     * @return The created mouse adapter.
-     */
-    @Contract(value = "_, _ -> new", pure = true)
-    public static @NotNull MouseAdapter createHyperlinkLabel(@NotNull JLabel label, @NotNull String url) {
-        return new MouseAdapter() {
-            @Override
-            public void mouseClicked(MouseEvent event) {
-                try {
-                    Desktop.getDesktop().browse(new URI(url));
-                } catch (IOException | URISyntaxException ex) {
-                    DebugUtil.warn("Failed to open URL: " + url, ex);
-                }
-            }
-
-            @Override
-            public void mouseEntered(MouseEvent event) {
-                // Underlines the label text when the mouse enters.
-                Font font = label.getFont();
-                Map<TextAttribute, ?> attributes = font.getAttributes();
-                @NotNull Map<TextAttribute, Object> attributeMap = new HashMap<>(attributes);
-                attributeMap.put(TextAttribute.UNDERLINE, TextAttribute.UNDERLINE_ON);
-                Font derivedFont = font.deriveFont(attributeMap);
-                label.setFont(derivedFont);
-            }
-
-            @Override
-            public void mouseExited(MouseEvent event) {
-                // Removes the underline when the mouse exits.
-                Font font = label.getFont();
-                Map<TextAttribute, ?> attributes = font.getAttributes();
-                @NotNull Map<TextAttribute, Object> attributeMap = new HashMap<>(attributes);
-                attributeMap.put(TextAttribute.UNDERLINE, -1);
-                Font derivedFont = font.deriveFont(attributeMap);
-                label.setFont(derivedFont);
-            }
-        };
-    }
-
-    /**
-     * Creates a panel button (located at the top of the panel).
-     *
-     * @param buttonName The name of the button.
-     * @param panelName  The name of the panel to switch to.
-     * @param bounds     The bounds of the button.
-     * @return The created button.
-     */
-    @SuppressWarnings("NestedMethodCall")
-    public static @NotNull JButton createPanelButton(String buttonName, String panelName, @NotNull Rectangle bounds) {
-        @NotNull JButton button = new JButton(buttonName);
-        button.setBounds(bounds);
-        button.setBackground(new Color(0, 120, 215));
-        button.setForeground(Color.WHITE);
-        button.setFocusPainted(false);
-        button.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 0));
-        button.setFont(new Font(ConstantUtil.ARIAL, Font.BOLD, 14));
-
-        button.addActionListener(actionEvent -> new Thread(() -> {
-            try {
-                performPanelButtonAction(panelName);
-            } catch (RuntimeException ex) {
-                DebugUtil.warn("Failed to switch panel: " + panelName, ex);
-            }
-        }).start());
-        return button;
-    }
-
-    /**
-     * Performs an action when a panel button is clicked.
-     *
-     * @param name The name of the panel to switch to.
-     */
-    @SuppressWarnings("NestedMethodCall")
-    private static void performPanelButtonAction(String name) {
-        CardLayout cardLayout = (CardLayout) RepairKit.getMainPanel().getLayout();
-        SwingUtilities.invokeLater(() -> cardLayout.show(RepairKit.getMainPanel(), name));
-    }
-
-    /**
-     * Creates a label.
-     *
-     * @param text   The text to display on the label.
-     * @param bounds The bounds of the label.
-     * @param font   The font of the label.
-     * @return The created label.
-     */
-    public static @NotNull JLabel createLabel(String text, @NotNull Rectangle bounds, Font font) {
-        @NotNull JLabel label = new JLabel(text);
-        label.setBounds(bounds);
-        label.setFont(font);
-        return label;
+    public static @NotNull String escapeHtml(@NotNull String text) {
+        return text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;");
     }
 }

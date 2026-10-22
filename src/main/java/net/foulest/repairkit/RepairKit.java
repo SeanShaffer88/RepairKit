@@ -17,312 +17,358 @@
  */
 package net.foulest.repairkit;
 
-import lombok.Getter;
-import lombok.Setter;
 import net.foulest.repairkit.panels.AutomaticRepairs;
 import net.foulest.repairkit.panels.SystemShortcuts;
 import net.foulest.repairkit.panels.UsefulPrograms;
-import net.foulest.repairkit.util.*;
+import net.foulest.repairkit.service.RepairOperations;
+import net.foulest.repairkit.service.RepairService;
+import net.foulest.repairkit.util.CommandUtil;
+import net.foulest.repairkit.util.ConstantUtil;
+import net.foulest.repairkit.util.DebugUtil;
+import net.foulest.repairkit.util.FileUtil;
+import net.foulest.repairkit.util.ProcessUtil;
+import net.foulest.repairkit.util.SingleInstanceLock;
+import net.foulest.repairkit.util.SoundUtil;
+import net.foulest.repairkit.util.SwingUtil;
+import net.foulest.repairkit.util.UpdateUtil;
+import net.foulest.repairkit.util.WindowsUtil;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import javax.swing.*;
+import javax.swing.border.EmptyBorder;
 import java.awt.*;
-import java.util.Arrays;
+import java.awt.event.ActionEvent;
+import java.awt.event.InputEvent;
+import java.awt.event.KeyEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
- * Main class for the program.
+ * The RepairKit application window.
+ * <p>
+ * Startup validation happens before any UI work, and the frame is built
+ * entirely on the event dispatch thread with layout managers. The window is
+ * resizable, uses the system font, and exposes keyboard shortcuts for page
+ * navigation.
  *
  * @author Foulest
  */
 public final class RepairKit extends JFrame {
 
-    @Getter
-    @Setter
-    private static JPanel mainPanel;
+    private static final String PANEL_REPAIRS = "repairs";
+    private static final String PANEL_PROGRAMS = "programs";
+    private static final String PANEL_SHORTCUTS = "shortcuts";
 
-    @Getter
-    private static boolean safeMode;
+    private static @Nullable SingleInstanceLock instanceLock;
 
-    @Getter
-    private static boolean outdatedOperatingSystem;
+    private final CardLayout cardLayout = new CardLayout();
+    private final JPanel cards = new JPanel(cardLayout);
+    private final Map<String, JToggleButton> navigation = new LinkedHashMap<>();
+    private final AutomaticRepairs repairsPanel;
 
     /**
-     * The main method of the program.
+     * Starts RepairKit.
      *
-     * @param args The program's arguments.
+     * @param args command line arguments
      */
     public static void main(String[] args) {
-        try {
-            // Checks if RepairKit is running as administrator.
-            DebugUtil.debug("Checking if RepairKit is running as administrator...");
-            if (CommandUtil.getCommandOutput("net session", false, false).toString().contains("Access is denied.")) {
-                SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
-                JOptionPane.showMessageDialog(null,
-                        "Please run RepairKit as an administrator.",
-                        "Error", JOptionPane.ERROR_MESSAGE);
-                System.exit(0);
-                return;
+        SwingUtil.installLookAndFeel();
+
+        if (!WindowsUtil.isWindows() || GraphicsEnvironment.isHeadless()) {
+            // Nothing below this point is safe off Windows: registry and shell
+            // access would fail with a linkage error rather than a message.
+            @NotNull String message = Messages.get("startup.os.message",
+                    System.getProperty("os.name", "unknown"));
+
+            if (GraphicsEnvironment.isHeadless()) {
+                System.err.println(message);
+            } else {
+                JOptionPane.showMessageDialog(null, message,
+                        Messages.get("startup.os.title"), JOptionPane.ERROR_MESSAGE);
             }
 
-            // Creates the new log file.
-            DebugUtil.createLogFile(args);
-
-            // Checks if RepairKit is running in the temp directory.
-            DebugUtil.debug("Checking if RepairKit is running in the temp directory...");
-            @NotNull String path = FileUtil.tempDirectory.getPath();
-
-            if (System.getProperty("user.dir").equalsIgnoreCase(path)) {
-                SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
-                JOptionPane.showMessageDialog(null, ConstantUtil.BAD_FILE_LOCATION, "Error", JOptionPane.ERROR_MESSAGE);
-                System.exit(0);
-                return;
-            }
-
-            // Checks for incompatibility issues.
-            DebugUtil.debug("Checking for incompatibility issues...");
-            checkOSCompatibility();
-
-            // Checks for Medal.
-            if (!safeMode) {
-                DebugUtil.debug("Checking for Medal...");
-                checkForMedal();
-            }
-
-            // Deletes pre-existing RepairKit files.
-            DebugUtil.debug("Deleting pre-existing RepairKit files...");
-            CommandUtil.runCommand("rd /s /q \"" + path + "\"", false);
-
-            // Deletes RepairKit files on shutdown.
-            DebugUtil.debug("Deleting RepairKit files on shutdown...");
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                DebugUtil.debug("Shutting down RepairKit...");
-                CommandUtil.runCommand("rd /s /q \"" + path + "\"", false);
-            }));
-
-            // Checks for updates.
-            DebugUtil.debug("Checking for updates...");
-            UpdateUtil.checkForUpdates();
-
-            // Launches the program.
-            DebugUtil.debug("Launching the program...");
-
-            SwingUtilities.invokeLater(() -> {
-                try {
-                    new RepairKit().setVisible(true);
-                } catch (RuntimeException ex) {
-                    DebugUtil.warn("Failed to set the program visible", ex);
-                    StackTraceElement[] stackTrace = ex.getStackTrace();
-                    DebugUtil.debug(Arrays.toString(stackTrace));
-                }
-            });
-        } catch (HeadlessException ex) {
-            DebugUtil.warn("Failed to launch the program", ex);
-            StackTraceElement[] stackTrace = ex.getStackTrace();
-            DebugUtil.debug(Arrays.toString(stackTrace));
+            System.exit(1);
         }
-    }
 
-    /**
-     * Creates a new instance of the program.
-     */
-    private RepairKit() {
-        try {
-            // Sets the window properties.
-            DebugUtil.debug("Setting up the window properties...");
-            setTitle("RepairKit");
-            setDefaultCloseOperation(EXIT_ON_CLOSE);
-            setPreferredSize(new Dimension(758, 550));
-            setResizable(false);
+        @Nullable SingleInstanceLock lock = SingleInstanceLock.acquire();
 
-            // Initialize the panels.
-            DebugUtil.debug("Initializing the Automatic Repairs panel...");
-            @NotNull AutomaticRepairs automaticRepairs = new AutomaticRepairs();
-            DebugUtil.debug("Initializing the Useful Programs panel...");
-            @NotNull UsefulPrograms usefulPrograms = new UsefulPrograms();
-            DebugUtil.debug("Initializing the System Shortcuts panel...");
-            @NotNull SystemShortcuts systemShortcuts = new SystemShortcuts();
-
-            // Creates the main panel.
-            DebugUtil.debug("Creating the main panel...");
-            mainPanel = new JPanel(new CardLayout());
-            mainPanel.add(automaticRepairs, "Automatic Repairs");
-            mainPanel.add(usefulPrograms, "Useful Programs");
-            mainPanel.add(systemShortcuts, "System Shortcuts");
-
-            // Creates the banner panel.
-            DebugUtil.debug("Creating the banner panel...");
-            @NotNull JPanel bannerPanel = createBannerPanel();
-
-            // Adds the panels to the main panel.
-            DebugUtil.debug("Adding the panels to the main panel...");
-            add(bannerPanel, BorderLayout.PAGE_START);
-            add(mainPanel, BorderLayout.CENTER);
-
-            // Packs and centers the frame.
-            DebugUtil.debug("Packing and centering the frame...");
-            pack();
-            setLocationRelativeTo(null);
-        } catch (RuntimeException ex) {
-            DebugUtil.warn("Failed to create a new instance of the program", ex);
-            StackTraceElement[] stackTrace = ex.getStackTrace();
-            DebugUtil.debug(Arrays.toString(stackTrace));
-        }
-    }
-
-    /**
-     * Creates the banner panel.
-     *
-     * @return The banner panel.
-     */
-    @NotNull
-    private JPanel createBannerPanel() {
-        // Creates the banner panel.
-        @NotNull JPanel bannerPanel = new JPanel(new BorderLayout());
-        bannerPanel.setLayout(null);
-        bannerPanel.setBackground(new Color(0, 120, 215));
-        int width = getWidth();
-        bannerPanel.setPreferredSize(new Dimension(width, 60));
-
-        // Creates the RepairKit icon image.
-        DebugUtil.debug("Creating the RepairKit icon image...");
-        @NotNull ImageIcon imageIcon = FileUtil.getImageIcon("icons/RepairKit.png");
-        @NotNull JLabel iconLabel = new JLabel(imageIcon);
-        iconLabel.setBounds(10, 10, 40, 40);
-        bannerPanel.add(iconLabel);
-        iconLabel.repaint();
-
-        // Creates the primary banner label.
-        DebugUtil.debug("Creating the primary banner label...");
-        @NotNull JLabel bannerLabelPrimary = SwingUtil.createLabel("RepairKit",
-                new Rectangle(60, 6, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 22)
-        );
-        bannerLabelPrimary.setForeground(Color.WHITE);
-        bannerPanel.add(bannerLabelPrimary);
-
-        // Creates the secondary banner label.
-        DebugUtil.debug("Creating the secondary banner label...");
-        @NotNull JLabel bannerLabelSecondary = SwingUtil.createLabel("by Foulest",
-                new Rectangle(60, 31, 70, 20),
-                new Font(ConstantUtil.ARIAL, Font.PLAIN, 14)
-        );
-        bannerLabelSecondary.setForeground(Color.WHITE);
-        bannerLabelSecondary.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        bannerLabelSecondary.addMouseListener(SwingUtil.createHyperlinkLabel(bannerLabelSecondary, "https://github.com/Foulest"));
-        bannerPanel.add(bannerLabelSecondary);
-
-        // Creates the version info label.
-        DebugUtil.debug("Creating the version info label...");
-        @NotNull JLabel versionInfo = SwingUtil.createLabel("Version:",
-                new Rectangle(675, 5, 60, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 14)
-        );
-        versionInfo.setForeground(Color.WHITE);
-        bannerPanel.add(versionInfo);
-
-        // Creates the version number label.
-        DebugUtil.debug("Creating the version number label...");
-        @NotNull JLabel versionNumber = SwingUtil.createLabel(UpdateUtil.getVersionFromProperties(),
-                new Rectangle(700, 25, 35, 30),
-                new Font(ConstantUtil.ARIAL, Font.PLAIN, 14)
-        );
-        versionNumber.setForeground(Color.WHITE);
-        versionNumber.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        versionNumber.addMouseListener(SwingUtil.createHyperlinkLabel(versionNumber, "https://github.com/Foulest/RepairKit/releases"));
-        bannerPanel.add(versionNumber);
-
-        // Creates the Automatic Repairs button.
-        DebugUtil.debug("Creating the Automatic Repairs button...");
-        @NotNull JButton automaticRepairs = SwingUtil.createPanelButton("Automatic Repairs", "Automatic Repairs", new Rectangle(175, 10, 150, 40));
-        bannerPanel.add(automaticRepairs);
-
-        // Creates the Useful Programs button.
-        DebugUtil.debug("Creating the Useful Programs button...");
-        @NotNull JButton usefulPrograms = SwingUtil.createPanelButton("Useful Programs", "Useful Programs", new Rectangle(325, 10, 150, 40));
-        bannerPanel.add(usefulPrograms);
-
-        // Creates the System Shortcuts button.
-        DebugUtil.debug("Creating the System Shortcuts button...");
-        @NotNull JButton systemShortcuts = SwingUtil.createPanelButton("System Shortcuts", "System Shortcuts", new Rectangle(475, 10, 150, 40));
-        bannerPanel.add(systemShortcuts);
-        return bannerPanel;
-    }
-
-    /**
-     * Checks if the user's operating system is supported.
-     */
-    private static void checkOSCompatibility() {
-        String osName = System.getProperty("os.name");
-
-        // Checks if the operating system is 32-bit.
-        DebugUtil.debug("Checking if the operating system is 32-bit...");
-        if (!System.getProperty("os.arch").contains("64")) {
+        if (lock == null) {
             SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
             JOptionPane.showMessageDialog(null,
-                    """
-                            Your operating system is 32-bit.\
-                            This program is designed for 64-bit operating systems.\
-                            Please upgrade to a 64-bit operating system to use this program.""",
-                    ConstantUtil.INCOMPATIBLE_OS_TITLE, JOptionPane.ERROR_MESSAGE);
-            System.exit(0);
+                    Messages.get("startup.instance.message"),
+                    Messages.get("startup.instance.title"),
+                    JOptionPane.WARNING_MESSAGE);
             return;
         }
 
-        // Checks if the operating system is outdated (older than Windows 10).
-        DebugUtil.debug("Checking if the operating system is outdated...");
-        if (!"Windows 10".equalsIgnoreCase(osName)
-                && !"Windows 11".equalsIgnoreCase(osName)
-                && !"Windows Server 2025".equalsIgnoreCase(osName)
-                && !"Windows Server 2022".equalsIgnoreCase(osName)
-                && !"Windows Server 2019".equalsIgnoreCase(osName)
-                && !"Windows Server 2016".equalsIgnoreCase(osName)) {
-            if (osName.contains("Windows")) {
-                SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
-                JOptionPane.showMessageDialog(null,
-                        "Your operating system, " + osName + ", "
-                                + "is outdated and no longer supported."
-                                + "\nFeatures of this program may not work correctly or at all.",
-                        ConstantUtil.OUTDATED_OS_TITLE, JOptionPane.ERROR_MESSAGE);
-                outdatedOperatingSystem = true;
-            } else {
-                SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
-                JOptionPane.showMessageDialog(null,
-                        "Your operating system, " + osName + ", "
-                                + "is outdated, unknown, or not Windows based."
-                                + "\nThis program is designed for Windows 10 and 11."
-                                + "\nPlease upgrade to a supported operating system to use this program.",
-                        ConstantUtil.INCOMPATIBLE_OS_TITLE, JOptionPane.ERROR_MESSAGE);
-                System.exit(0);
-                return;
-            }
-        }
+        instanceLock = lock;
+        DebugUtil.logEnvironment(args);
 
-        // Checks if the system is booting in Safe Mode.
-        DebugUtil.debug("Checking if the system is booting in Safe Mode...");
-        if (!CommandUtil.getCommandOutput("echo %SAFEBOOT_OPTION%",
-                false, false).toString().contains("%SAFEBOOT_OPTION%")) {
+        if (!WindowsUtil.is64Bit()) {
             SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
             JOptionPane.showMessageDialog(null,
-                    "Your system is booting in Safe Mode."
-                            + "\nFeatures of this program may not work correctly or at all.",
-                    ConstantUtil.SAFE_MODE_TITLE, JOptionPane.ERROR_MESSAGE);
-            safeMode = true;
+                    Messages.get("startup.arch.message"),
+                    Messages.get("startup.arch.title"), JOptionPane.ERROR_MESSAGE);
+            System.exit(1);
+        }
+
+        if (!WindowsUtil.isAdministrator()) {
+            SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
+            JOptionPane.showMessageDialog(null,
+                    Messages.get("startup.admin.message"),
+                    Messages.get("startup.admin.title"), JOptionPane.ERROR_MESSAGE);
+            System.exit(1);
+        }
+
+        WindowsUtil.OsInfo osInfo = WindowsUtil.osInfo();
+
+        if (!osInfo.supported()) {
+            SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
+            JOptionPane.showMessageDialog(null,
+                    Messages.get("startup.os.message", osInfo.describe()),
+                    Messages.get("startup.os.title"), JOptionPane.ERROR_MESSAGE);
+            System.exit(1);
+        }
+
+        boolean safeMode = WindowsUtil.isSafeMode();
+
+        // Left-over tool directories are removed before a new session starts.
+        FileUtil.cleanupToolDirectories();
+
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            CommandUtil.terminateAll();
+            DebugUtil.close();
+
+            if (instanceLock != null) {
+                instanceLock.close();
+            }
+        }, "repairkit-shutdown"));
+
+        SwingUtilities.invokeLater(() -> {
+            RepairKit frame = new RepairKit(safeMode);
+            frame.setVisible(true);
+
+            if (osInfo.windows10EndOfLife()) {
+                SwingUtil.warning(frame, Messages.get("startup.os.eol.title"),
+                        Messages.get("startup.os.eol.message"));
+            }
+
+            if (safeMode) {
+                SwingUtil.warning(frame, Messages.get("startup.safemode.title"),
+                        Messages.get("startup.safemode.message"));
+            }
+
+            @NotNull List<String> invalidConfig = RepairOperations.invalidConfigFiles();
+
+            if (!invalidConfig.isEmpty()) {
+                SwingUtil.warning(frame, Messages.get("error.config.title"),
+                        Messages.get("error.config.message", String.join(", ", invalidConfig)));
+            }
+
+            if (ProcessUtil.isProcessRunning("medal.exe")) {
+                SwingUtil.warning(frame, Messages.get("startup.medal.title"),
+                        Messages.get("startup.medal.message"));
+            }
+
+            UpdateUtil.checkForUpdates();
+        });
+    }
+
+    private RepairKit(boolean safeMode) {
+        super(Messages.get("app.title"));
+
+        setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
+        setMinimumSize(new Dimension(880, 620));
+        setPreferredSize(new Dimension(1040, 740));
+
+        @NotNull Image icon = FileUtil.getImageIcon("icons/RepairKit.png").getImage();
+        setIconImage(icon);
+
+        repairsPanel = new AutomaticRepairs(safeMode);
+        @NotNull UsefulPrograms programsPanel = new UsefulPrograms();
+        @NotNull SystemShortcuts shortcutsPanel = new SystemShortcuts();
+
+        cards.add(repairsPanel, PANEL_REPAIRS);
+        cards.add(programsPanel, PANEL_PROGRAMS);
+        cards.add(shortcutsPanel, PANEL_SHORTCUTS);
+
+        setLayout(new BorderLayout());
+        add(createBanner(), BorderLayout.PAGE_START);
+        add(cards, BorderLayout.CENTER);
+        add(createFooter(), BorderLayout.PAGE_END);
+
+        installKeyboardShortcuts();
+        addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent event) {
+                attemptExit();
+            }
+        });
+
+        pack();
+        setLocationRelativeTo(null);
+        showPanel(PANEL_REPAIRS);
+    }
+
+    private @NotNull JPanel createBanner() {
+        @NotNull JPanel banner = new JPanel(new BorderLayout(16, 0));
+        banner.setBackground(new Color(0, 90, 158));
+        banner.setBorder(BorderFactory.createEmptyBorder(10, 14, 10, 14));
+
+        @NotNull JPanel identity = new JPanel(new BorderLayout(10, 0));
+        identity.setOpaque(false);
+
+        @NotNull JLabel logo = new JLabel(SwingUtil.scale(
+                FileUtil.getImageIcon("icons/RepairKit.png"), 40));
+        identity.add(logo, BorderLayout.LINE_START);
+
+        @NotNull JPanel titles = new JPanel();
+        titles.setOpaque(false);
+        titles.setLayout(new BoxLayout(titles, BoxLayout.Y_AXIS));
+
+        @NotNull JLabel title = new JLabel(Messages.get("app.title"));
+        title.setForeground(Color.WHITE);
+        title.setFont(SwingUtil.font(Font.BOLD, 21));
+        title.setAlignmentX(Component.LEFT_ALIGNMENT);
+        titles.add(title);
+
+        @NotNull JButton byline = SwingUtil.bannerLink(Messages.get("app.byline"),
+                () -> WindowsUtil.openUri("https://github.com/Foulest"));
+        byline.setAlignmentX(Component.LEFT_ALIGNMENT);
+        titles.add(byline);
+
+        identity.add(titles, BorderLayout.CENTER);
+        banner.add(identity, BorderLayout.LINE_START);
+
+        @NotNull JPanel navigationPanel = new JPanel(new GridBagLayout());
+        navigationPanel.setOpaque(false);
+        @NotNull GridBagConstraints constraints = new GridBagConstraints();
+        constraints.gridy = 0;
+        constraints.insets = new Insets(0, 4, 0, 4);
+
+        @NotNull ButtonGroup group = new ButtonGroup();
+
+        addNavigationButton(navigationPanel, group, constraints, PANEL_REPAIRS,
+                Messages.get("nav.automatic"));
+        addNavigationButton(navigationPanel, group, constraints, PANEL_PROGRAMS,
+                Messages.get("nav.programs"));
+        addNavigationButton(navigationPanel, group, constraints, PANEL_SHORTCUTS,
+                Messages.get("nav.shortcuts"));
+
+        banner.add(navigationPanel, BorderLayout.CENTER);
+
+        @NotNull JPanel versionPanel = new JPanel();
+        versionPanel.setOpaque(false);
+        versionPanel.setLayout(new BoxLayout(versionPanel, BoxLayout.Y_AXIS));
+
+        @NotNull JLabel version = new JLabel(Messages.get("app.version",
+                UpdateUtil.versionString()));
+        version.setForeground(Color.WHITE);
+        version.setFont(SwingUtil.font(Font.PLAIN, 12));
+        version.setAlignmentX(Component.RIGHT_ALIGNMENT);
+        versionPanel.add(version);
+
+        @NotNull JButton checkForUpdates = SwingUtil.bannerLink(
+                Messages.get("app.version.tooltip"),
+                () -> WindowsUtil.openUri("https://github.com/Foulest/RepairKit/releases"));
+        checkForUpdates.setAlignmentX(Component.RIGHT_ALIGNMENT);
+        versionPanel.add(checkForUpdates);
+
+        banner.add(versionPanel, BorderLayout.LINE_END);
+        return banner;
+    }
+
+    private void addNavigationButton(@NotNull JPanel panel, @NotNull ButtonGroup group,
+                                     @NotNull GridBagConstraints constraints,
+                                     @NotNull String key, @NotNull String text) {
+        @NotNull JToggleButton button = SwingUtil.navigationButton(text, text,
+                () -> showPanel(key));
+        group.add(button);
+        navigation.put(key, button);
+        panel.add(button, constraints);
+    }
+
+    private @NotNull JPanel createFooter() {
+        @NotNull JPanel footer = new JPanel(new BorderLayout(8, 0));
+        footer.setBorder(BorderFactory.createEmptyBorder(4, 14, 6, 14));
+
+        @NotNull JLabel logLabel = new JLabel(Messages.get("footer.logLocation",
+                DebugUtil.getLogFile().getFileName().toString()));
+        logLabel.setFont(SwingUtil.font(Font.PLAIN, 11));
+        footer.add(logLabel, BorderLayout.LINE_START);
+
+        @NotNull JPanel links = new JPanel(new FlowLayout(FlowLayout.TRAILING, 8, 0));
+        links.setOpaque(false);
+        links.add(SwingUtil.linkButton(Messages.get("footer.openLog"),
+                () -> FileUtil.open(DebugUtil.getLogFile())));
+        links.add(SwingUtil.linkButton(Messages.get("footer.openBackups"),
+                () -> WindowsUtil.openDirectory(WindowsUtil.backupDirectory())));
+        footer.add(links, BorderLayout.LINE_END);
+
+        return footer;
+    }
+
+    private void installKeyboardShortcuts() {
+        @NotNull InputMap inputMap = getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
+        @NotNull ActionMap actionMap = getRootPane().getActionMap();
+
+        bindPanelShortcut(inputMap, actionMap, KeyEvent.VK_1, PANEL_REPAIRS);
+        bindPanelShortcut(inputMap, actionMap, KeyEvent.VK_2, PANEL_PROGRAMS);
+        bindPanelShortcut(inputMap, actionMap, KeyEvent.VK_3, PANEL_SHORTCUTS);
+    }
+
+    private void bindPanelShortcut(@NotNull InputMap inputMap, @NotNull ActionMap actionMap,
+                                   int keyCode, @NotNull String panel) {
+        @NotNull String name = "show-" + panel;
+        inputMap.put(KeyStroke.getKeyStroke(keyCode, InputEvent.CTRL_DOWN_MASK), name);
+        actionMap.put(name, new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent event) {
+                showPanel(panel);
+            }
+        });
+    }
+
+    private void showPanel(@NotNull String key) {
+        cardLayout.show(cards, key);
+        @Nullable JToggleButton button = navigation.get(key);
+
+        if (button != null) {
+            button.setSelected(true);
         }
     }
 
-    /**
-     * Checks if Medal is installed.
-     * Medal causes issues with Desktop Window Manager.
-     */
-    private static void checkForMedal() {
-        if (ProcessUtil.isProcessRunning("medal.exe")) {
-            SoundUtil.playSound(ConstantUtil.WARNING_SOUND);
-            JOptionPane.showMessageDialog(null,
-                    """
-                            Warning: Medal is installed and running on your system.\
-                            Medal causes issues with Desktop Windows Manager, which affects system performance.\
-                            Finding an alternative to Medal, such as ShadowPlay or AMD ReLive, is recommended.""",
-                    "Software Warning", JOptionPane.WARNING_MESSAGE);
+    private void attemptExit() {
+        if (RepairService.isRunning()) {
+            // Name the destructive choice explicitly and default to keeping the
+            // window open, so a stray Enter cannot abort a running repair.
+            Object[] options = {Messages.get("frame.close.button"),
+                    Messages.get("common.cancel")};
+
+            int choice = JOptionPane.showOptionDialog(this,
+                    Messages.get("frame.close.message"),
+                    Messages.get("frame.close.title"), JOptionPane.YES_NO_OPTION,
+                    JOptionPane.WARNING_MESSAGE, null, options, options[1]);
+
+            if (choice != 0) {
+                return;
+            }
+
+            repairsPanel.requestCancel();
+            CommandUtil.cancelActiveProcesses();
         }
+
+        dispose();
+        DebugUtil.close();
+
+        if (instanceLock != null) {
+            instanceLock.close();
+        }
+
+        System.exit(0);
     }
 }

@@ -17,514 +17,144 @@
  */
 package net.foulest.repairkit.panels;
 
-import net.foulest.repairkit.RepairKit;
-import net.foulest.repairkit.util.*;
+import net.foulest.repairkit.Messages;
+import net.foulest.repairkit.model.Shortcut;
+import net.foulest.repairkit.service.ShortcutCatalog;
+import net.foulest.repairkit.service.ToolLauncher;
+import net.foulest.repairkit.util.DebugUtil;
+import net.foulest.repairkit.util.FileUtil;
+import net.foulest.repairkit.util.SwingUtil;
+import net.foulest.repairkit.util.WindowsUtil;
 import org.jetbrains.annotations.NotNull;
 
 import javax.swing.*;
+import javax.swing.border.EmptyBorder;
 import java.awt.*;
-import java.util.Arrays;
 import java.util.List;
 
 /**
- * Panel for System Shortcuts.
+ * The System Shortcuts panel.
+ * <p>
+ * Shortcuts are defined in {@link ShortcutCatalog}. Settings pages open through
+ * the Windows shell rather than {@code cmd /c start}, and tools that do not work
+ * in Safe Mode are disabled with an explanation.
  *
  * @author Foulest
  */
-public class SystemShortcuts extends JPanel {
+public final class SystemShortcuts extends JPanel {
 
-    // Grid layout constants
-    private static final int[] COLUMN_X = {20, 250, 480};
-    private static final int ROW_START_Y = 55;
-    private static final int ROW_SPACING = 95;
-    private static final int ROWS = 4;
+    private static final int CARD_WIDTH = 280;
+    private static final int CARD_HEIGHT = 150;
 
     /**
-     * Returns the base X position for the given slot index.
-     * Slots fill left-to-right, top-to-bottom (0-indexed).
-     */
-    private static int slotX(int slot) {
-        return COLUMN_X[slot / ROWS];
-    }
-
-    /**
-     * Returns the base Y position for the given slot index.
-     * Slots fill left-to-right, top-to-bottom (0-indexed).
-     */
-    private static int slotY(int slot) {
-        return ROW_START_Y + (slot % ROWS) * ROW_SPACING;
-    }
-
-    /**
-     * Creates the System Shortcuts panel.
+     * Creates the panel.
      */
     public SystemShortcuts() {
-        // Sets the panel's layout to null.
-        setLayout(null);
+        super(new BorderLayout(0, 12));
+        setBorder(new EmptyBorder(16, 18, 12, 18));
 
-        // Creates the title label.
-        @NotNull JLabel titleLabel = SwingUtil.createLabel("System Shortcuts",
-                new Rectangle(20, 15, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 18)
-        );
-        add(titleLabel);
+        @NotNull JPanel header = new JPanel();
+        header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
 
-        // Creates tasks for the executor.
-        @NotNull List<Runnable> tasks = Arrays.asList(
-                this::setupAppsFeatures,
-                this::setupStartupApps,
-                this::setupWindowsUpdate,
-                this::setupWindowsSecurity,
+        @NotNull JLabel title = SwingUtil.title(Messages.get("shortcuts.title"));
+        title.setAlignmentX(Component.LEFT_ALIGNMENT);
+        header.add(title);
 
-                this::setupDisplaySettings,
-                this::setupStorageSettings,
-                this::setupSoundSettings,
-                this::setupSystemInformation,
-                this::setupTaskManager,
-                this::setupDeviceManager,
-                this::setupDiskCleanup,
-                this::setupMSConfig
-        );
+        @NotNull JLabel description = SwingUtil.description(
+                Messages.get("shortcuts.description"), 720);
+        description.setAlignmentX(Component.LEFT_ALIGNMENT);
+        header.add(description);
 
-        // Executes tasks using TaskUtil.
-        TaskUtil.executeTasks(tasks);
+        add(header, BorderLayout.PAGE_START);
 
-        // Sets the panel's border.
-        setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
-    }
+        @NotNull JPanel grid = new JPanel();
+        grid.setLayout(new BoxLayout(grid, BoxLayout.Y_AXIS));
 
-    /**
-     * Sets up the Apps & Features section.
-     */
-    private void setupAppsFeatures() {
-        int baseWidth = slotX(0);
-        int baseHeight = slotY(0);
+        boolean safeMode = WindowsUtil.isSafeMode();
+        @NotNull List<Shortcut> shortcuts = ShortcutCatalog.shortcuts();
 
-        // Adds a title label for Apps & Features.
-        @NotNull JLabel title = SwingUtil.createLabel("Apps & Features",
-                new Rectangle(baseWidth + 43, baseHeight, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 16)
-        );
-        add(title);
+        for (int index = 0; index < shortcuts.size(); index += 3) {
+            @NotNull JPanel row = new JPanel(new GridLayout(1, 3, 14, 14));
+            row.setOpaque(false);
+            row.setBorder(new EmptyBorder(0, 0, 14, 0));
 
-        // Adds a description label for Apps & Features.
-        @NotNull JLabel description = SwingUtil.createLabel("Manage installed programs.",
-                new Rectangle(baseWidth + 43, baseHeight + 20, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 12)
-        );
-        add(description);
+            for (int column = 0; column < 3; column++) {
+                int shortcutIndex = index + column;
 
-        // Adds an icon for Apps & Features.
-        SwingUtil.setupAppIcon(baseHeight, baseWidth, FileUtil.getImageIcon("icons/AppsFeatures.png"), this);
-
-        // Adds a button to launch Apps & Features.
-        @NotNull JButton appButton = SwingUtil.createActionButton("Open Apps & Features",
-                new Rectangle(baseWidth, baseHeight + 50, 200, 30),
-                new Color(200, 200, 200), () -> {
-                    if (RepairKit.isOutdatedOperatingSystem()) {
-                        CommandUtil.runCommand("appwiz.cpl", true);
-                    } else {
-                        CommandUtil.runCommand("start ms-settings:appsfeatures", true);
-                    }
+                if (shortcutIndex < shortcuts.size()) {
+                    row.add(createCard(shortcuts.get(shortcutIndex), safeMode));
+                } else {
+                    @NotNull JPanel filler = new JPanel();
+                    filler.setOpaque(false);
+                    row.add(filler);
                 }
-        );
-        add(appButton);
+            }
+
+            row.setMaximumSize(new Dimension(Integer.MAX_VALUE, CARD_HEIGHT + 14));
+            grid.add(row);
+        }
+
+        @NotNull JScrollPane scroll = new JScrollPane(grid);
+        scroll.setBorder(null);
+        scroll.getVerticalScrollBar().setUnitIncrement(18);
+        scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+        add(scroll, BorderLayout.CENTER);
     }
 
-    /**
-     * Sets up the Startup Apps section.
-     */
-    private void setupStartupApps() {
-        int baseWidth = slotX(1);
-        int baseHeight = slotY(1);
+    private @NotNull JComponent createCard(@NotNull Shortcut shortcut, boolean safeMode) {
+        @NotNull JPanel card = new JPanel(new BorderLayout(10, 8));
+        card.setPreferredSize(new Dimension(CARD_WIDTH, CARD_HEIGHT));
+        card.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(SwingUtil.borderColor()),
+                new EmptyBorder(10, 10, 10, 10)));
 
-        // Adds a title label for Startup Apps.
-        @NotNull JLabel title = SwingUtil.createLabel("Startup Apps",
-                new Rectangle(baseWidth + 43, baseHeight, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 16)
-        );
-        add(title);
+        @NotNull JLabel icon = new JLabel(SwingUtil.scale(
+                FileUtil.getImageIcon(shortcut.icon()), 40));
+        card.add(icon, BorderLayout.LINE_START);
 
-        // Adds a description label for Startup Apps.
-        @NotNull JLabel description = SwingUtil.createLabel("Manage startup programs.",
-                new Rectangle(baseWidth + 43, baseHeight + 20, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 12)
-        );
-        add(description);
+        @NotNull JPanel text = new JPanel();
+        text.setOpaque(false);
+        text.setLayout(new BoxLayout(text, BoxLayout.Y_AXIS));
 
-        // Adds an icon for Startup Apps.
-        SwingUtil.setupAppIcon(baseHeight, baseWidth, FileUtil.getImageIcon("icons/StartupApps.png"), this);
+        @NotNull JLabel name = new JLabel(shortcut.name());
+        name.setFont(SwingUtil.font(Font.BOLD, 14));
+        name.setAlignmentX(Component.LEFT_ALIGNMENT);
+        text.add(name);
 
-        // Adds a button to launch Startup Apps.
-        @NotNull JButton appButton = SwingUtil.createActionButton("Open Startup Apps",
-                new Rectangle(baseWidth, baseHeight + 50, 200, 30),
-                new Color(200, 200, 200), () -> {
-                    if (RepairKit.isOutdatedOperatingSystem()) {
-                        CommandUtil.runCommand("msconfig", true);
-                    } else {
-                        CommandUtil.runCommand("start ms-settings:startupapps", true);
-                    }
-                }
-        );
-        add(appButton);
+        @NotNull JLabel description = new JLabel("<html><body style='width:170px'>"
+                + SwingUtil.escapeHtml(shortcut.description()) + "</body></html>");
+        description.setFont(SwingUtil.font(Font.PLAIN, 11));
+        description.setBorder(new EmptyBorder(4, 0, 0, 0));
+        description.setAlignmentX(Component.LEFT_ALIGNMENT);
+        text.add(description);
+
+        card.add(text, BorderLayout.CENTER);
+
+        @NotNull JButton button = SwingUtil.button(Messages.get("shortcuts.open"),
+                shortcut.description(), () -> open(shortcut));
+
+        if (safeMode && shortcut.blockedInSafeMode()) {
+            button.setEnabled(false);
+            button.setToolTipText(Messages.get("shortcuts.safeMode.message"));
+            button.getAccessibleContext().setAccessibleDescription(
+                    Messages.get("shortcuts.safeMode.message"));
+        }
+
+        card.add(button, BorderLayout.PAGE_END);
+        return card;
     }
 
-    /**
-     * Sets up the Windows Update section.
-     */
-    private void setupWindowsUpdate() {
-        int baseWidth = slotX(2);
-        int baseHeight = slotY(2);
+    private void open(@NotNull Shortcut shortcut) {
+        Thread worker = new Thread(() -> {
+            @NotNull ToolLauncher.LaunchResult result = ToolLauncher.launch(shortcut);
+            DebugUtil.debug(result.message());
 
-        // Adds a title label for Windows Update.
-        @NotNull JLabel title = SwingUtil.createLabel("Windows Update",
-                new Rectangle(baseWidth + 43, baseHeight, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 16)
-        );
-        add(title);
-
-        // Adds a description label for Windows Update.
-        @NotNull JLabel description = SwingUtil.createLabel("Check for updates.",
-                new Rectangle(baseWidth + 43, baseHeight + 20, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 12)
-        );
-        add(description);
-
-        // Adds an icon for Windows Update.
-        SwingUtil.setupAppIcon(baseHeight, baseWidth, FileUtil.getImageIcon("icons/WindowsUpdate.png"), this);
-
-        // Adds a button to launch Windows Update.
-        @NotNull JButton appButton = SwingUtil.createActionButton("Open Windows Update",
-                new Rectangle(baseWidth, baseHeight + 50, 200, 30),
-                new Color(200, 200, 200), () -> {
-                    if (RepairKit.isOutdatedOperatingSystem()) {
-                        if (RepairKit.isSafeMode()) {
-                            SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
-                            JOptionPane.showMessageDialog(null, ConstantUtil.SAFE_MODE_MESSAGE, ConstantUtil.SAFE_MODE_TITLE, JOptionPane.ERROR_MESSAGE);
-                            return;
-                        }
-                        CommandUtil.runCommand("control /name Microsoft.WindowsUpdate", true);
-                    } else {
-                        CommandUtil.runCommand("start ms-settings:windowsupdate", true);
-                    }
-                }
-        );
-        add(appButton);
-    }
-
-    /**
-     * Sets up the Windows Security section.
-     */
-    private void setupWindowsSecurity() {
-        int baseWidth = slotX(3);
-        int baseHeight = slotY(3);
-
-        // Adds a title label for Windows Security.
-        @NotNull JLabel title = SwingUtil.createLabel("Windows Security",
-                new Rectangle(baseWidth + 43, baseHeight, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 16)
-        );
-        add(title);
-
-        // Adds a description label for Windows Security.
-        @NotNull JLabel description = SwingUtil.createLabel("Manage security settings.",
-                new Rectangle(baseWidth + 43, baseHeight + 20, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 12)
-        );
-        add(description);
-
-        // Adds an icon for Windows Security.
-        SwingUtil.setupAppIcon(baseHeight, baseWidth, FileUtil.getImageIcon("icons/WindowsSecurity.png"), this);
-
-        // Adds a button to launch Windows Security.
-        @NotNull JButton appButton = SwingUtil.createActionButton("Open Windows Security",
-                new Rectangle(baseWidth, baseHeight + 50, 200, 30),
-                new Color(200, 200, 200), () -> {
-                    if (RepairKit.isOutdatedOperatingSystem()) {
-                        if (RepairKit.isSafeMode()) {
-                            SoundUtil.playSound(ConstantUtil.ERROR_SOUND);
-                            JOptionPane.showMessageDialog(null, ConstantUtil.SAFE_MODE_MESSAGE, ConstantUtil.SAFE_MODE_TITLE, JOptionPane.ERROR_MESSAGE);
-                            return;
-                        }
-                        CommandUtil.runCommand("control /name Microsoft.WindowsDefender", true);
-                    } else {
-                        CommandUtil.runCommand("start windowsdefender:", true);
-                    }
-                }
-        );
-        add(appButton);
-    }
-
-    /**
-     * Sets up the Display Settings section.
-     */
-    private void setupDisplaySettings() {
-        int baseWidth = slotX(4);
-        int baseHeight = slotY(4);
-
-        // Adds a title label for Display Settings.
-        @NotNull JLabel title = SwingUtil.createLabel("Display Settings",
-                new Rectangle(baseWidth + 43, baseHeight, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 16)
-        );
-        add(title);
-
-        // Adds a description label for Display Settings.
-        @NotNull JLabel description = SwingUtil.createLabel("Manage display settings.",
-                new Rectangle(baseWidth + 43, baseHeight + 20, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 12)
-        );
-        add(description);
-
-        // Adds an icon for Display Settings.
-        SwingUtil.setupAppIcon(baseHeight, baseWidth, FileUtil.getImageIcon("icons/DisplaySettings.png"), this);
-
-        // Adds a button to launch Display Settings.
-        @NotNull JButton appButton = SwingUtil.createActionButton("Open Display Settings",
-                new Rectangle(baseWidth, baseHeight + 50, 200, 30),
-                new Color(200, 200, 200),
-                () -> CommandUtil.runCommand("start desk.cpl", true)
-        );
-        add(appButton);
-    }
-
-    /**
-     * Sets up the Storage Settings section.
-     */
-    private void setupStorageSettings() {
-        int baseWidth = slotX(5);
-        int baseHeight = slotY(5);
-
-        // Adds a title label for Storage Settings.
-        @NotNull JLabel title = SwingUtil.createLabel("Storage Settings",
-                new Rectangle(baseWidth + 43, baseHeight, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 16)
-        );
-        add(title);
-
-        // Adds a description label for Storage Settings.
-        @NotNull JLabel description = SwingUtil.createLabel("Manage storage settings.",
-                new Rectangle(baseWidth + 43, baseHeight + 20, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 12)
-        );
-        add(description);
-
-        // Adds an icon for Storage Settings.
-        SwingUtil.setupAppIcon(baseHeight, baseWidth, FileUtil.getImageIcon("icons/StorageSettings.png"), this);
-
-        // Adds a button to launch Storage Settings.
-        @NotNull JButton appButton = SwingUtil.createActionButton("Open Storage Settings",
-                new Rectangle(baseWidth, baseHeight + 50, 200, 30),
-                new Color(200, 200, 200), () -> {
-                    if (RepairKit.isOutdatedOperatingSystem()) {
-                        CommandUtil.runCommand("start explorer /select,\"This PC\"", true);
-                    } else {
-                        CommandUtil.runCommand("start ms-settings:storagesense", true);
-                    }
-                }
-        );
-        add(appButton);
-    }
-
-    /**
-     * Sets up the Sound Settings section.
-     */
-    private void setupSoundSettings() {
-        int baseWidth = slotX(6);
-        int baseHeight = slotY(6);
-
-        // Adds a title label for Sound Settings.
-        @NotNull JLabel title = SwingUtil.createLabel("Sound Settings",
-                new Rectangle(baseWidth + 43, baseHeight, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 16)
-        );
-        add(title);
-
-        // Adds a description label for Sound Settings.
-        @NotNull JLabel description = SwingUtil.createLabel("Manage sound settings.",
-                new Rectangle(baseWidth + 43, baseHeight + 20, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 12)
-        );
-        add(description);
-
-        // Adds an icon for Sound Settings.
-        SwingUtil.setupAppIcon(baseHeight, baseWidth, FileUtil.getImageIcon("icons/SoundSettings.png"), this);
-
-        // Adds a button to launch Sound Settings.
-        @NotNull JButton appButton = SwingUtil.createActionButton("Open Sound Settings",
-                new Rectangle(baseWidth, baseHeight + 50, 200, 30),
-                new Color(200, 200, 200), () -> {
-                    if (RepairKit.isOutdatedOperatingSystem()) {
-                        CommandUtil.runCommand("start control mmsys.cpl sounds", true);
-                    } else {
-                        CommandUtil.runCommand("start ms-settings:sound", true);
-                    }
-                }
-        );
-        add(appButton);
-    }
-
-    /**
-     * Sets up the System Information section.
-     */
-    private void setupSystemInformation() {
-        int baseWidth = slotX(7);
-        int baseHeight = slotY(7);
-
-        // Adds a title label for System Information.
-        @NotNull JLabel title = SwingUtil.createLabel("System Information",
-                new Rectangle(baseWidth + 43, baseHeight, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 16)
-        );
-        add(title);
-
-        // Adds a description label for System Information.
-        @NotNull JLabel description = SwingUtil.createLabel("View system information.",
-                new Rectangle(baseWidth + 43, baseHeight + 20, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 12)
-        );
-        add(description);
-
-        // Adds an icon for System Information.
-        SwingUtil.setupAppIcon(baseHeight, baseWidth, FileUtil.getImageIcon("icons/SystemInformation.png"), this);
-
-        // Adds a button to launch System Information.
-        @NotNull JButton appButton = SwingUtil.createActionButton("Open System Information",
-                new Rectangle(baseWidth, baseHeight + 50, 200, 30),
-                new Color(200, 200, 200), () -> CommandUtil.runCommand("start msinfo32", true)
-        );
-        add(appButton);
-    }
-
-    /**
-     * Sets up the Task Manager section.
-     */
-    private void setupTaskManager() {
-        int baseWidth = slotX(8);
-        int baseHeight = slotY(8);
-
-        // Adds a title label for Task Manager.
-        @NotNull JLabel title = SwingUtil.createLabel("Task Manager",
-                new Rectangle(baseWidth + 43, baseHeight, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 16)
-        );
-        add(title);
-
-        // Adds a description label for Task Manager.
-        @NotNull JLabel description = SwingUtil.createLabel("Manage running processes.",
-                new Rectangle(baseWidth + 43, baseHeight + 20, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 12)
-        );
-        add(description);
-
-        // Adds an icon for Task Manager.
-        SwingUtil.setupAppIcon(baseHeight, baseWidth, FileUtil.getImageIcon("icons/TaskManager.png"), this);
-
-        // Adds a button to launch Task Manager.
-        @NotNull JButton appButton = SwingUtil.createActionButton("Open Task Manager",
-                new Rectangle(baseWidth, baseHeight + 50, 200, 30),
-                new Color(200, 200, 200),
-                () -> CommandUtil.runCommand("taskmgr", true)
-        );
-        add(appButton);
-    }
-
-    /**
-     * Sets up the Device Manager section.
-     */
-    private void setupDeviceManager() {
-        int baseWidth = slotX(9);
-        int baseHeight = slotY(9);
-
-        // Adds a title label for Device Manager.
-        @NotNull JLabel title = SwingUtil.createLabel("Device Manager",
-                new Rectangle(baseWidth + 43, baseHeight, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 16)
-        );
-        add(title);
-
-        // Adds a description label for Device Manager.
-        @NotNull JLabel description = SwingUtil.createLabel("Manage hardware devices.",
-                new Rectangle(baseWidth + 43, baseHeight + 20, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 12)
-        );
-        add(description);
-
-        // Adds an icon for Device Manager.
-        SwingUtil.setupAppIcon(baseHeight, baseWidth, FileUtil.getImageIcon("icons/DeviceManager.png"), this);
-
-        // Adds a button to launch Device Manager.
-        @NotNull JButton appButton = SwingUtil.createActionButton("Open Device Manager",
-                new Rectangle(baseWidth, baseHeight + 50, 200, 30),
-                new Color(200, 200, 200),
-                () -> CommandUtil.runCommand("devmgmt.msc", true)
-        );
-        add(appButton);
-    }
-
-    /**
-     * Sets up the Disk Cleanup section.
-     */
-    private void setupDiskCleanup() {
-        int baseWidth = slotX(10);
-        int baseHeight = slotY(10);
-
-        // Adds a title label for Disk Cleanup.
-        @NotNull JLabel title = SwingUtil.createLabel("Disk Cleanup",
-                new Rectangle(baseWidth + 43, baseHeight, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 16)
-        );
-        add(title);
-
-        // Adds a description label for Disk Cleanup.
-        @NotNull JLabel description = SwingUtil.createLabel("Clean up disk space.",
-                new Rectangle(baseWidth + 43, baseHeight + 20, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 12)
-        );
-        add(description);
-
-        // Adds an icon for Disk Cleanup.
-        SwingUtil.setupAppIcon(baseHeight, baseWidth, FileUtil.getImageIcon("icons/DiskCleanup.png"), this);
-
-        // Adds a button to launch Disk Cleanup.
-        @NotNull JButton appButton = SwingUtil.createActionButton("Open Disk Cleanup",
-                new Rectangle(baseWidth, baseHeight + 50, 200, 30),
-                new Color(200, 200, 200),
-                () -> CommandUtil.runCommand("cleanmgr", true)
-        );
-        add(appButton);
-    }
-
-    /**
-     * Sets up the MSConfig section.
-     */
-    private void setupMSConfig() {
-        int baseWidth = slotX(11);
-        int baseHeight = slotY(11);
-
-        // Adds a title label for MSConfig.
-        @NotNull JLabel title = SwingUtil.createLabel("MSConfig",
-                new Rectangle(baseWidth + 43, baseHeight, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 16)
-        );
-        add(title);
-
-        // Adds a description label for MSConfig.
-        @NotNull JLabel description = SwingUtil.createLabel("System configuration utility.",
-                new Rectangle(baseWidth + 43, baseHeight + 20, 200, 30),
-                new Font(ConstantUtil.ARIAL, Font.BOLD, 12)
-        );
-        add(description);
-
-        // Adds an icon for MSConfig.
-        SwingUtil.setupAppIcon(baseHeight, baseWidth, FileUtil.getImageIcon("icons/MSConfig.png"), this);
-
-        // Adds a button to launch MSConfig.
-        @NotNull JButton appButton = SwingUtil.createActionButton("Open MSConfig",
-                new Rectangle(baseWidth, baseHeight + 50, 200, 30),
-                new Color(200, 200, 200),
-                () -> CommandUtil.runCommand("msconfig", true)
-        );
-        add(appButton);
+            if (!result.success()) {
+                SwingUtil.error(this, Messages.get("shortcuts.failed.title"),
+                        Messages.get("shortcuts.failed.message", shortcut.name()));
+            }
+        }, "repairkit-shortcut-" + shortcut.id());
+        worker.setDaemon(true);
+        worker.start();
     }
 }
