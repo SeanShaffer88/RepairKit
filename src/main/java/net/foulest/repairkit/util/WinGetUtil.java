@@ -49,10 +49,13 @@ public final class WinGetUtil {
     private static final Duration LIST_TIMEOUT = Duration.ofMinutes(5);
     private static final Duration UPGRADE_TIMEOUT = Duration.ofMinutes(20);
     private static final int UPDATE_NOT_APPLICABLE = -1978335189; // 0x8A15002B
+    private static final int NO_APPLICATIONS_FOUND = -1978335212; // 0x8A150014
+    private static final int NO_APPLICABLE_UPGRADE = -1978335135; // 0x8A150061
 
     private static final Pattern PACKAGE_ID =
             Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._+\\-]{2,}$");
     private static final Pattern COLUMN_SEPARATOR = Pattern.compile("\\s{2,}");
+    private static final Pattern VERSION = Pattern.compile("^[0-9][0-9A-Za-z.+\\-]*$");
 
     private WinGetUtil() {
         throw new UnsupportedOperationException("Utility class");
@@ -68,7 +71,8 @@ public final class WinGetUtil {
 
         if (winget == null) {
             return new UpdateSummary(List.of(), List.of(), List.of(),
-                    "WinGet is not installed, so program updates were skipped.");
+                    "WinGet is not installed, so program updates were skipped.",
+                    Outcome.NOT_INSTALLED);
         }
 
         @NotNull List<String> excluded = excludedPrograms();
@@ -78,7 +82,22 @@ public final class WinGetUtil {
 
         if (listing.timedOut()) {
             return new UpdateSummary(List.of(), List.of(), List.of(),
-                    "WinGet did not respond while listing upgrades.");
+                    "WinGet did not respond while listing upgrades.", Outcome.QUERY_FAILED);
+        }
+
+        if (!listing.succeeded()) {
+            // WinGet reports "nothing to do" with two specific exit codes; treat
+            // only those as success so a broken source is not reported as
+            // "everything is up to date".
+            if (listing.exitCode() == NO_APPLICATIONS_FOUND
+                    || listing.exitCode() == NO_APPLICABLE_UPGRADE) {
+                return new UpdateSummary(List.of(), List.of(), List.of(),
+                        "No outdated programs were found.", Outcome.COMPLETED);
+            }
+
+            return new UpdateSummary(List.of(), List.of(), List.of(),
+                    "WinGet could not list upgrades (exit " + listing.exitCode() + "): "
+                            + listing.tail(3), Outcome.QUERY_FAILED);
         }
 
         @NotNull List<String> candidates = parseUpgradeIds(listing.output());
@@ -98,7 +117,8 @@ public final class WinGetUtil {
             return new UpdateSummary(List.of(), List.of(), skipped,
                     candidates.isEmpty()
                             ? "No outdated programs were found."
-                            : "Every outdated program is excluded in update_programs.json.");
+                            : "Every outdated program is excluded in update_programs.json.",
+                    Outcome.COMPLETED);
         }
 
         notifyUser("Updating " + attempted.size() + " program(s) with WinGet...");
@@ -126,7 +146,7 @@ public final class WinGetUtil {
                 + failed.size() + " failed, " + skipped.size() + " skipped.";
 
         notifyUser(message);
-        return new UpdateSummary(updated, failed, skipped, message);
+        return new UpdateSummary(updated, failed, skipped, message, Outcome.COMPLETED);
     }
 
     private static void notifyUser(@NotNull String message) {
@@ -154,9 +174,9 @@ public final class WinGetUtil {
     /**
      * Parses package IDs from the {@code winget upgrade} table.
      * <p>
-     * The table layout is stable across locales even though the headings are
-     * translated: data rows have at least four whitespace-separated columns and
-     * the second column is the package ID.
+     * The headings are translated but the layout is fixed: Name, Id, Version,
+     * Available, Source. A data row therefore has at least four columns, and the
+     * Id is the first column that is followed by a version-looking column.
      *
      * @param lines the command output
      * @return the package IDs
@@ -164,11 +184,18 @@ public final class WinGetUtil {
     static @NotNull List<String> parseUpgradeIds(@NotNull List<String> lines) {
         @NotNull Set<String> ids = new LinkedHashSet<>();
         boolean inTable = false;
+        boolean sawRow = false;
 
         for (String line : lines) {
             @NotNull String trimmed = line.trim();
 
             if (trimmed.isEmpty()) {
+                // WinGet prints a blank line after the table and then a summary
+                // such as "3 upgrades available", which must not be parsed.
+                if (sawRow) {
+                    break;
+                }
+
                 continue;
             }
 
@@ -184,13 +211,30 @@ public final class WinGetUtil {
                 continue;
             }
 
+            sawRow = true;
+
             String[] columns = COLUMN_SEPARATOR.split(trimmed);
 
-            if (columns.length < 4 || !PACKAGE_ID.matcher(columns[1]).matches()) {
+            if (columns.length < 4) {
                 continue;
             }
 
-            ids.add(columns[1]);
+            // The table is Name, Id, Version, Available, Source. The Id is normally
+            // the second column, but a product name can itself contain a run of
+            // spaces, which shifts every following column. Take the first column
+            // that looks like an id and is followed by a version instead.
+            for (int index = 1; index < columns.length - 1; index++) {
+                if (!PACKAGE_ID.matcher(columns[index]).matches()) {
+                    continue;
+                }
+
+                if (!VERSION.matcher(columns[index + 1]).matches()) {
+                    continue;
+                }
+
+                ids.add(columns[index]);
+                break;
+            }
         }
 
         return new ArrayList<>(ids);
@@ -222,7 +266,8 @@ public final class WinGetUtil {
     public record UpdateSummary(@NotNull List<String> updated,
                                 @NotNull List<String> failed,
                                 @NotNull List<String> skipped,
-                                @NotNull String message) {
+                                @NotNull String message,
+                                @NotNull Outcome outcome) {
 
         /**
          * Checks whether every attempted upgrade succeeded.
@@ -232,5 +277,24 @@ public final class WinGetUtil {
         public boolean hasFailures() {
             return !failed.isEmpty();
         }
+    }
+
+    /**
+     * How the WinGet step ended.
+     * <p>
+     * Callers need to distinguish "nothing to update" from "WinGet is missing"
+     * and "the query failed"; reporting all three as success hides a broken
+     * WinGet source.
+     */
+    public enum Outcome {
+
+        /** The query ran and any applicable upgrades were attempted. */
+        COMPLETED,
+
+        /** WinGet is not installed on this PC. */
+        NOT_INSTALLED,
+
+        /** WinGet could not list or upgrade packages. */
+        QUERY_FAILED
     }
 }

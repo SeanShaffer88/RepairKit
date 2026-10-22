@@ -214,6 +214,15 @@ public final class RepairOperations {
 
                         @NotNull WinGetUtil.UpdateSummary summary = WinGetUtil.updateAllPrograms();
 
+                        if (summary.outcome() == WinGetUtil.Outcome.NOT_INSTALLED) {
+                            // Not a failure: WinGet is simply optional here.
+                            return StepResult.skipped(summary.message());
+                        }
+
+                        if (summary.outcome() == WinGetUtil.Outcome.QUERY_FAILED) {
+                            return StepResult.failed(summary.message());
+                        }
+
                         if (summary.hasFailures() && summary.updated().isEmpty()) {
                             return StepResult.failed(summary.message());
                         }
