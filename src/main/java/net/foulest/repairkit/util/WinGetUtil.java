@@ -261,6 +261,7 @@ public final class WinGetUtil {
      * @param failed  package IDs that failed to upgrade
      * @param skipped package IDs that were excluded or had no applicable update
      * @param message diagnostic summary
+     * @param outcome how the step ended
      * @author Foulest
      */
     public record UpdateSummary(@NotNull List<String> updated,
