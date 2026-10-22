@@ -147,6 +147,11 @@ public final class CommandUtil {
                     lines, !finished, Duration.ofNanos(System.nanoTime() - started));
             DebugUtil.debug(result.describe());
             return result;
+        } catch (IOException ex) {
+            terminate(process);
+            DebugUtil.warn("Failed to close command input: " + String.join(" ", command), ex);
+            return new CommandResult(String.join(" ", command), -1, List.of(),
+                    false, Duration.ofNanos(System.nanoTime() - started));
         } catch (InterruptedException ex) {
             terminate(process);
             Thread.currentThread().interrupt();

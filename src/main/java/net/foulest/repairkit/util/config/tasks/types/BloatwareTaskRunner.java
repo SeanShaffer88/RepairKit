@@ -117,7 +117,7 @@ public class BloatwareTaskRunner implements ConfigTaskRunner {
         int removed = 0;
         @NotNull List<String> failures = new ArrayList<>();
 
-        for (String chunk : chunks(installedMatches, 15)) {
+        for (List<String> chunk : chunks(installedMatches, 15)) {
             @NotNull CommandResult result = CommandUtil.runPowerShell(buildRemovalScript(chunk),
                     REMOVE_TIMEOUT);
 
