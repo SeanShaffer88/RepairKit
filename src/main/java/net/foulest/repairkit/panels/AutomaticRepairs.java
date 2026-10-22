@@ -496,7 +496,9 @@ public final class AutomaticRepairs extends JPanel {
         }
 
         if (report.requiresRestart()) {
-            details += "\n\n" + Messages.get("repairs.restart.message");
+            // Inline notice only: the prompt below asks whether to restart now.
+            details += "\n\n" + Messages.get(cancelled
+                    ? "repairs.restart.pending" : "repairs.restart.message");
         }
 
         JOptionPane.showMessageDialog(this, details,
