@@ -17,6 +17,7 @@
  */
 package net.foulest.repairkit.service;
 
+import net.foulest.repairkit.Messages;
 import net.foulest.repairkit.model.Shortcut;
 import net.foulest.repairkit.model.Tool;
 import net.foulest.repairkit.util.CommandResult;
@@ -61,7 +62,7 @@ public final class ToolLauncher {
      */
     public static @NotNull LaunchResult launch(@NotNull Tool tool) {
         if (!tool.isBundled()) {
-            return new LaunchResult(false, "The tool is a link, not a bundled application.", null);
+            return new LaunchResult(false, Messages.get("tools.launch.notBundled"), null);
         }
 
         @Nullable Path directory = null;
@@ -84,7 +85,7 @@ public final class ToolLauncher {
                 DebugUtil.warn("Failed to extract " + tool.archive() + ": "
                         + extraction.tail(5), null);
                 cleanup(directory);
-                return new LaunchResult(false, "The tool archive could not be extracted.", null);
+                return new LaunchResult(false, Messages.get("tools.launch.extractFailed"), null);
             }
 
             @NotNull Path executable = appDirectory.resolve(tool.executable()).normalize();
@@ -92,8 +93,7 @@ public final class ToolLauncher {
             if (!executable.startsWith(appDirectory) || !Files.isRegularFile(executable)) {
                 DebugUtil.warn("The expected executable is missing: " + executable, null);
                 cleanup(directory);
-                return new LaunchResult(false, "The expected executable is missing from the "
-                        + "archive.", null);
+                return new LaunchResult(false, Messages.get("tools.launch.executableMissing"), null);
             }
 
             DebugUtil.debug("Launching " + executable + " (sha256 "
@@ -104,10 +104,11 @@ public final class ToolLauncher {
 
             if (process == null) {
                 cleanup(directory);
-                return new LaunchResult(false, "The tool could not be started.", null);
+                return new LaunchResult(false, Messages.get("tools.launch.startFailed"), null);
             }
 
-            return new LaunchResult(true, tool.name() + " was started.", directory);
+            return new LaunchResult(true, Messages.get("tools.launch.started", tool.name()),
+                    directory);
         } catch (IOException ex) {
             DebugUtil.warn("Failed to prepare " + tool.name(), ex);
 
@@ -115,7 +116,7 @@ public final class ToolLauncher {
                 cleanup(directory);
             }
 
-            return new LaunchResult(false, "The tool could not be prepared. See the log.", null);
+            return new LaunchResult(false, Messages.get("tools.launch.prepareFailed"), null);
         }
     }
 
@@ -128,16 +129,16 @@ public final class ToolLauncher {
     public static @NotNull LaunchResult launch(@NotNull Shortcut shortcut) {
         if (shortcut.uri()) {
             boolean opened = WindowsUtil.openUri(shortcut.target());
-            return new LaunchResult(opened,
-                    opened ? shortcut.name() + " was opened."
-                            : "Windows could not open " + shortcut.name() + ".",
-                    null);
+            return new LaunchResult(opened, opened
+                    ? Messages.get("tools.launch.opened", shortcut.name())
+                    : Messages.get("common.openFailed", shortcut.name()), null);
         }
 
         @NotNull Path executable = WindowsUtil.system32(shortcut.target());
 
         if (!Files.isRegularFile(executable)) {
-            return new LaunchResult(false, "The system tool is missing: " + executable, null);
+            return new LaunchResult(false,
+                    Messages.get("tools.launch.systemMissing", executable), null);
         }
 
         @NotNull List<String> command = new ArrayList<>();
@@ -147,10 +148,9 @@ public final class ToolLauncher {
         @Nullable Process process = CommandUtil.startDetached(command,
                 WindowsUtil.dataDirectory());
 
-        return new LaunchResult(process != null,
-                process != null ? shortcut.name() + " was opened."
-                        : "Windows could not open " + shortcut.name() + ".",
-                null);
+        return new LaunchResult(process != null, process != null
+                ? Messages.get("tools.launch.opened", shortcut.name())
+                : Messages.get("common.openFailed", shortcut.name()), null);
     }
 
     /**
