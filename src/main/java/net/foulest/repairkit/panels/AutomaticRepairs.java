@@ -416,7 +416,10 @@ public final class AutomaticRepairs extends JPanel {
 
         summary.append("</ul>");
 
-        if (!selected.contains("restorePoint")) {
+        if (selected.contains("restorePoint")) {
+            summary.append("<p>").append(SwingUtil.escapeHtml(
+                    Messages.get("repairs.confirm.restoreMissing"))).append("</p>");
+        } else {
             summary.append("<p><b>").append(SwingUtil.escapeHtml(
                     Messages.get("repairs.confirm.noRestore"))).append("</b></p>");
         }
@@ -442,11 +445,16 @@ public final class AutomaticRepairs extends JPanel {
 
         summary.append("</body></html>");
 
-        int choice = JOptionPane.showConfirmDialog(this, summary.toString(),
-                Messages.get("repairs.confirm.title"),
-                JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+        // An explicit "I understand" button instead of a bare OK, with Cancel
+        // pre-selected so that Enter or Escape never starts a repair run.
+        Object[] options = {Messages.get("repairs.confirm.continue"),
+                Messages.get("common.cancel")};
 
-        return choice == JOptionPane.OK_OPTION;
+        int choice = JOptionPane.showOptionDialog(this, summary.toString(),
+                Messages.get("repairs.confirm.title"), JOptionPane.YES_NO_OPTION,
+                JOptionPane.WARNING_MESSAGE, null, options, options[1]);
+
+        return choice == 0;
     }
 
     private void finishRun(@NotNull RepairReport report) {
@@ -462,28 +470,45 @@ public final class AutomaticRepairs extends JPanel {
         progressBar.setString("");
 
         @NotNull String summary = report.summary();
+        boolean cancelled = report.cancelled();
+        boolean successful = report.isFullySuccessful();
+
         statusLabel.setText(summary);
-        SoundUtil.playSound(report.isFullySuccessful()
+        SoundUtil.playSound(successful || cancelled
                 ? ConstantUtil.EXCLAMATION_SOUND
                 : ConstantUtil.WARNING_SOUND);
 
-        @NotNull String details = summary + "\n\n"
-                + (report.isFullySuccessful()
-                ? Messages.get("repairs.finished.allOk")
-                : Messages.get("repairs.finished.someFailed"))
+        String headline;
+
+        if (cancelled) {
+            headline = Messages.get("repairs.finished.cancelled");
+        } else if (successful) {
+            headline = Messages.get("repairs.finished.allOk");
+        } else {
+            headline = Messages.get("repairs.finished.someFailed");
+        }
+
+        @NotNull String details = summary + "\n\n" + headline
                 + "\n\nLog: " + report.logFile();
 
         if (report.backupFile() != null) {
             details += "\nRegistry backup: " + report.backupFile();
         }
 
+        if (report.requiresRestart()) {
+            details += "\n\n" + Messages.get("repairs.restart.message");
+        }
+
         JOptionPane.showMessageDialog(this, details,
-                Messages.get("repairs.finished.title"),
-                report.isFullySuccessful()
+                Messages.get(cancelled ? "repairs.finished.cancelledTitle"
+                        : "repairs.finished.title"),
+                cancelled || successful
                         ? JOptionPane.INFORMATION_MESSAGE
                         : JOptionPane.WARNING_MESSAGE);
 
-        if (report.requiresRestart()) {
+        // A cancelled run already ended with a deliberate user action, so do not
+        // stack a second modal on top of it; the restart notice above is enough.
+        if (report.requiresRestart() && !cancelled) {
             promptForRestart();
         }
     }

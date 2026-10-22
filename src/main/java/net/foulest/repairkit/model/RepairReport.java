@@ -56,11 +56,16 @@ public record RepairReport(@NotNull List<TaskResult> results,
 
     /**
      * Checks whether every selected task completed successfully.
+     * <p>
+     * A cancelled run never counts as successful, and neither does a run with
+     * no results at all: nothing was verified, so nothing can be called done.
      *
-     * @return {@code true} when no task failed, partially failed, or was cancelled
+     * @return {@code true} when at least one task ran and no task failed,
+     *         partially failed, or was cancelled
      */
     public boolean isFullySuccessful() {
-        return results.stream().allMatch(result -> result.status() == StepStatus.OK
+        return !cancelled && !results.isEmpty()
+                && results.stream().allMatch(result -> result.status() == StepStatus.OK
                 || result.status() == StepStatus.SKIPPED);
     }
 

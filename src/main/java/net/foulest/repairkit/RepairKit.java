@@ -344,12 +344,17 @@ public final class RepairKit extends JFrame {
 
     private void attemptExit() {
         if (RepairService.isRunning()) {
-            int choice = JOptionPane.showConfirmDialog(this,
-                    Messages.get("frame.close.message"),
-                    Messages.get("frame.close.title"),
-                    JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            // Name the destructive choice explicitly and default to keeping the
+            // window open, so a stray Enter cannot abort a running repair.
+            Object[] options = {Messages.get("frame.close.button"),
+                    Messages.get("common.cancel")};
 
-            if (choice != JOptionPane.YES_OPTION) {
+            int choice = JOptionPane.showOptionDialog(this,
+                    Messages.get("frame.close.message"),
+                    Messages.get("frame.close.title"), JOptionPane.YES_NO_OPTION,
+                    JOptionPane.WARNING_MESSAGE, null, options, options[1]);
+
+            if (choice != 0) {
                 return;
             }
 
