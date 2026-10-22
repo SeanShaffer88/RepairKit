@@ -1,3 +1,5 @@
+> **Fork identity: contribution fork.** Derived from [Foulest/RepairKit](https://github.com/Foulest/RepairKit). Hardening and release-pipeline work is proposed in [PR #1](https://github.com/SeanShaffer88/RepairKit/pull/1). It is not merged into this default branch. Inherited badges and download links refer to Foulest/RepairKit, not a release of the proposed hardening. See [fork provenance](PROVENANCE.md) for ownership and reporting routes.
+
 # RepairKit
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
@@ -159,3 +161,4 @@ RepairKit will now open, and you can start using its features.
 ## Getting Help
 
 For support or queries, please open an issue in the [Issues section](https://github.com/Foulest/RepairKit/issues).
+
