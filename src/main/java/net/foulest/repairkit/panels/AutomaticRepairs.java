@@ -447,12 +447,12 @@ public final class AutomaticRepairs extends JPanel {
 
         // An explicit "I understand" button instead of a bare OK, with Cancel
         // pre-selected so that Enter or Escape never starts a repair run.
-        Object[] options = {Messages.get("repairs.confirm.continue"),
+        Object[] buttons = {Messages.get("repairs.confirm.continue"),
                 Messages.get("common.cancel")};
 
         int choice = JOptionPane.showOptionDialog(this, summary.toString(),
                 Messages.get("repairs.confirm.title"), JOptionPane.YES_NO_OPTION,
-                JOptionPane.WARNING_MESSAGE, null, options, options[1]);
+                JOptionPane.WARNING_MESSAGE, null, buttons, buttons[1]);
 
         return choice == 0;
     }
