@@ -26,6 +26,7 @@ import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.LinkOption;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Duration;
@@ -148,7 +149,7 @@ public final class JunkFileUtil {
             return;
         }
 
-        if (Files.isDirectory(normalized)) {
+        if (Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS)) {
             roots.add(normalized);
         }
     }
@@ -156,11 +157,12 @@ public final class JunkFileUtil {
     /**
      * Checks whether a directory is a safe cleanup root.
      * <p>
-     * Only temporary and cache directories qualify: the path must contain a
-     * {@code Temp}, {@code Tmp}, {@code Cache}, or {@code Caches} component.
+     * Only temporary and cache roots qualify: the final path component must be
+     * {@code Temp}, {@code Tmp}, {@code Cache}, or {@code Caches}, except that
+     * descendants of the Windows temporary directory are also permitted.
      * Drive roots, the Windows directory (except {@code Windows\Temp}), Program
-     * Files, and user profile folders are rejected, so a typo in the
-     * configuration can never turn into a documents wipe.
+     * Files, user profile roots, and existing reparse-point ancestors are rejected.
+     * Configured roots still require review; this is not a filesystem sandbox.
      *
      * @param path the absolute, normalized path
      * @return {@code true} when it is safe to delete files under it
@@ -171,6 +173,44 @@ public final class JunkFileUtil {
         // A drive root has no parent and may never be a cleanup root.
         if (absolute.getParent() == null) {
             return false;
+        }
+
+        // Reject protected ancestors before looking for a Temp/Cache component.
+        // A profile called "Temp" must never qualify as a cleanup directory.
+        for (Path current = absolute; current != null; current = current.getParent()) {
+            Path name = current.getFileName();
+            if (name != null && (name.toString().equalsIgnoreCase("Program Files")
+                    || name.toString().equalsIgnoreCase("Program Files (x86)"))) {
+                return false;
+            }
+            Path parent = current.getParent();
+            if (parent != null && parent.getFileName() != null
+                    && parent.getFileName().toString().equalsIgnoreCase("Users")
+                    && current.equals(absolute)) {
+                return false;
+            }
+            try {
+                if (Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
+                    BasicFileAttributes attrs = Files.readAttributes(current,
+                            BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                    if (attrs.isSymbolicLink() || attrs.isOther()) {
+                        return false;
+                    }
+                }
+            } catch (IOException | SecurityException ex) {
+                return false;
+            }
+        }
+        Path profile = Path.of(System.getProperty("user.home")).toAbsolutePath().normalize();
+        if (absolute.equals(profile) || profile.startsWith(absolute)) {
+            return false;
+        }
+        for (String variable : List.of("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432")) {
+            String value = System.getenv(variable);
+            if (value != null && !value.isBlank()
+                    && absolute.startsWith(Path.of(value).toAbsolutePath().normalize())) {
+                return false;
+            }
         }
 
         @NotNull Path windows = WindowsUtil.windowsDirectory().toAbsolutePath().normalize();
@@ -184,7 +224,10 @@ public final class JunkFileUtil {
             return absolute.startsWith(windows.resolve("Temp"));
         }
 
-        for (Path element : absolute) {
+        // Only an actual temporary/cache root qualifies; finding a matching
+        // component above Documents or another unrelated directory is unsafe.
+        Path element = absolute.getFileName();
+        if (element != null) {
             @NotNull String name = element.toString().toLowerCase(Locale.ROOT);
 
             if (name.equals("temp") || name.equals("tmp") || name.equals("cache")
@@ -215,6 +258,11 @@ public final class JunkFileUtil {
     private static @NotNull CleanupResult cleanDirectory(@NotNull Path root, @NotNull Instant cutoff,
                                                          @NotNull List<Path> excluded) {
         long[] counters = new long[3];
+
+        // Recheck immediately before traversal, including every existing ancestor.
+        if (!isSafeCleanupRoot(root)) {
+            return new CleanupResult(0, 0, 1, false, "Unsafe cleanup root refused.");
+        }
 
         try {
             Files.walkFileTree(root, EnumSet.noneOf(FileVisitOption.class), 32,

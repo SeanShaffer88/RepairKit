@@ -158,9 +158,7 @@ public class RegistryTaskRunner implements ConfigTaskRunner {
             }
 
             case DELETE_KEY -> {
-                if (backup != null) {
-                    backup.recordKeyDeletion(entry.hive(), entry.keyPath());
-                }
+                RegistryBackup.requireAvailable(backup).recordKeyDeletion(entry.hive(), entry.keyPath());
 
                 RegistryUtil.deleteTree(entry.hive(), entry.keyPath());
             }
@@ -168,9 +166,7 @@ public class RegistryTaskRunner implements ConfigTaskRunner {
     }
 
     private void backupValue(@NotNull ParsedEntry entry) {
-        if (backup != null) {
-            backup.recordValue(entry.hive(), entry.keyPath(), entry.valueName());
-        }
+        RegistryBackup.requireAvailable(backup).recordValue(entry.hive(), entry.keyPath(), entry.valueName());
     }
 
     private enum Action {

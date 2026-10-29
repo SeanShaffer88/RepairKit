@@ -86,7 +86,7 @@ public final class RepairService {
             try {
                 backup = RegistryBackup.create("repairs");
             } catch (IOException ex) {
-                DebugUtil.warn("Registry changes for this run will not be backed up", ex);
+                throw new IllegalStateException("Repair run refused: registry backup could not be created.", ex);
             }
 
             @NotNull List<RepairTask> tasks = RepairOperations.expand(selected, backup);

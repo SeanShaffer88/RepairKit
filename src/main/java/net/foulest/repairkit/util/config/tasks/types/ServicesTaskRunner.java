@@ -118,9 +118,7 @@ public class ServicesTaskRunner implements ConfigTaskRunner {
 
         @NotNull String registryPath = "SYSTEM\\CurrentControlSet\\Services\\" + serviceName;
 
-        if (backup != null) {
-            backup.recordValue(WinReg.HKEY_LOCAL_MACHINE, registryPath, "Start");
-        }
+        RegistryBackup.requireAvailable(backup).recordValue(WinReg.HKEY_LOCAL_MACHINE, registryPath, "Start");
 
         if (action.equals("disabled")) {
             @NotNull CommandResult stop = CommandUtil.run(WindowsUtil.system32("sc.exe"),

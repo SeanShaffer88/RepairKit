@@ -31,6 +31,8 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiPredicate;
+import com.sun.jna.platform.win32.Advapi32Util;
 
 /**
  * Writes a {@code .reg} restore file for the registry values that a repair
@@ -55,16 +57,34 @@ public final class RegistryBackup implements AutoCloseable {
     private final Path regFile;
     private final Path manifestFile;
     private final BufferedWriter writer;
+    private final BiPredicate<String, Path> keyExporter;
     private final StringBuilder manifest = new StringBuilder();
     private final AtomicInteger records = new AtomicInteger();
     private final AtomicInteger exports = new AtomicInteger();
 
     private RegistryBackup(Path directory, Path regFile, Path manifestFile,
                            BufferedWriter writer) {
+        this(directory, regFile, manifestFile, writer, (qualified, target) ->
+                CommandUtil.run(WindowsUtil.system32("reg.exe"), Duration.ofMinutes(1),
+                        "export", qualified, target.toString(), "/y").succeeded()
+                        && Files.isRegularFile(target));
+    }
+
+    RegistryBackup(Path directory, Path regFile, Path manifestFile,
+                   BufferedWriter writer, BiPredicate<String, Path> keyExporter) {
         this.directory = directory;
         this.regFile = regFile;
         this.manifestFile = manifestFile;
         this.writer = writer;
+        this.keyExporter = keyExporter;
+    }
+
+    /** Refuses registry mutation when no backup could be created. */
+    public static @NotNull RegistryBackup requireAvailable(@Nullable RegistryBackup backup) {
+        if (backup == null) {
+            throw new IllegalStateException("Registry changes require a writable backup.");
+        }
+        return backup;
     }
 
     /**
@@ -105,15 +125,23 @@ public final class RegistryBackup implements AutoCloseable {
      */
     public synchronized void recordValue(WinReg.HKEY hive, @NotNull String keyPath,
                                          @NotNull String valueName) {
-        @NotNull Map<String, Object> values = RegistryUtil.values(hive, keyPath);
+        // A failed read is not evidence that a value was absent. Propagate it
+        // rather than writing a deletion marker that would lose the old value.
+        @NotNull Map<String, Object> values = Advapi32Util.registryKeyExists(hive, keyPath)
+                ? Advapi32Util.registryGetValues(hive, keyPath) : Map.of();
+        recordValueSnapshot(RegistryUtil.qualifiedPath(hive, keyPath), valueName, values);
+    }
+
+    synchronized void recordValueSnapshot(@NotNull String qualified, @NotNull String valueName,
+                                          @NotNull Map<String, Object> values) {
         boolean exists = values.containsKey(valueName);
         Object oldValue = values.get(valueName);
-        @NotNull String qualified = RegistryUtil.qualifiedPath(hive, keyPath);
+        String formatted = formatValue(valueName, exists, oldValue);
 
         try {
             writer.write("[" + qualified + "]");
             writer.write(System.lineSeparator());
-            writer.write(formatValue(valueName, exists, oldValue));
+            writer.write(formatted);
             writer.write(System.lineSeparator());
             writer.write(System.lineSeparator());
             writer.flush();
@@ -126,6 +154,7 @@ public final class RegistryBackup implements AutoCloseable {
             manifest.append(System.lineSeparator());
         } catch (IOException ex) {
             DebugUtil.warn("Failed to write the registry backup", ex);
+            throw new IllegalStateException("Registry backup could not be persisted; change refused.", ex);
         }
     }
 
@@ -147,7 +176,7 @@ public final class RegistryBackup implements AutoCloseable {
 
         if (oldValue instanceof String[] strings) {
             @NotNull StringBuilder builder = new StringBuilder(name).append("=hex(7):");
-            @NotNull String joined = String.join("\u0000", strings) + "\u0000";
+            @NotNull String joined = String.join("\u0000", strings) + "\u0000\u0000";
 
             for (byte value : joined.getBytes(StandardCharsets.UTF_16LE)) {
                 builder.append(String.format("%02x,", value));
@@ -157,9 +186,7 @@ public final class RegistryBackup implements AutoCloseable {
             return builder.toString();
         }
 
-        // Unsupported types are documented rather than silently dropped.
-        return "; " + name + " had an unsupported value type ("
-                + oldValue.getClass().getSimpleName() + ") and must be restored manually";
+        throw new IllegalStateException("Registry value type cannot be backed up; change refused.");
     }
 
     private static @NotNull String escape(@NotNull String value) {
@@ -177,11 +204,7 @@ public final class RegistryBackup implements AutoCloseable {
         int index = exports.incrementAndGet();
         @NotNull Path target = directory.resolve("deleted-key-" + index + ".reg");
 
-        @NotNull CommandResult result = CommandUtil.run(
-                WindowsUtil.system32("reg.exe"), Duration.ofMinutes(1),
-                "export", qualified, target.toString(), "/y");
-
-        if (result.succeeded() && Files.isRegularFile(target)) {
+        if (keyExporter.test(qualified, target)) {
             manifest.append("KEY ").append(qualified).append(" exported to ")
                     .append(target.getFileName()).append(System.lineSeparator());
         } else {
@@ -190,6 +213,7 @@ public final class RegistryBackup implements AutoCloseable {
                     .append(" could not be exported before deletion")
                     .append(System.lineSeparator());
             DebugUtil.warn("Failed to export registry key before deletion: " + qualified, null);
+            throw new IllegalStateException("Registry key backup failed; deletion refused: " + qualified);
         }
     }
 

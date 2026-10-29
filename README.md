@@ -60,6 +60,8 @@ Safety behaviour:
 - Every registry value that is changed is written to a `.reg` backup in
   `%LOCALAPPDATA%\RepairKit\backups\<timestamp>-repairs` before the change, including "value did not exist" markers so
   that importing the backup removes values RepairKit created. Deleted keys are exported with `reg export` first.
+  Backup creation, read, write, or export failures stop the affected registry change; unsupported old value types are refused rather than silently omitted.
+  Cleanup rejects protected roots and existing junction/symlink ancestors, and rechecks immediately before walking. Configured cleanup roots still require review; this is not a filesystem sandbox or protection against concurrent privileged filesystem changes.
 - The confirmation dialog lists every selected repair with its risk level, warns when no restore point will be created,
   and warns when the system drive is BitLocker-protected or the PC is domain joined.
 - Cancel stops the current command and marks the remaining repairs as cancelled; the window cannot be closed silently

@@ -589,10 +589,8 @@ public final class RepairOperations {
         CommandUtil.run(WindowsUtil.system32("netsh.exe"), MEDIUM,
                 "int", "tcp", "set", "global", "timestamps=enabled");
 
-        if (backup != null) {
-            backup.recordKeyDeletion(WinReg.HKEY_CLASSES_ROOT,
-                    "CLSID\\{988248f3-a1ad-49bf-9170-676cbbc36ba3}");
-        }
+        RegistryBackup.requireAvailable(backup).recordKeyDeletion(WinReg.HKEY_CLASSES_ROOT,
+                "CLSID\\{988248f3-a1ad-49bf-9170-676cbbc36ba3}");
 
         RegistryUtil.deleteTree(WinReg.HKEY_CLASSES_ROOT,
                 "CLSID\\{988248f3-a1ad-49bf-9170-676cbbc36ba3}");
@@ -628,9 +626,7 @@ public final class RepairOperations {
         for (String subKey : RegistryUtil.listSubKeys(WinReg.HKEY_LOCAL_MACHINE, baseKey)) {
             @NotNull String path = baseKey + "\\" + subKey;
 
-            if (backup != null) {
-                backup.recordValue(WinReg.HKEY_LOCAL_MACHINE, path, "NetbiosOptions");
-            }
+            RegistryBackup.requireAvailable(backup).recordValue(WinReg.HKEY_LOCAL_MACHINE, path, "NetbiosOptions");
 
             try {
                 RegistryUtil.setInt(WinReg.HKEY_LOCAL_MACHINE, path, "NetbiosOptions", 2);
