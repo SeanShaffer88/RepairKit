@@ -17,36 +17,44 @@
  */
 package net.foulest.repairkit.util;
 
-import lombok.AccessLevel;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import org.jetbrains.annotations.NotNull;
 
-import java.awt.*;
+import java.awt.Toolkit;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Utility class for sound operations.
+ * Plays the standard Windows notification sounds.
  *
  * @author Foulest
  */
-@Data
-@NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class SoundUtil {
 
-    private static final ExecutorService threadPool = Executors.newCachedThreadPool();
+    private static final ExecutorService SOUND_PLAYER =
+            Executors.newSingleThreadExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "repairkit-sound");
+                thread.setDaemon(true);
+                return thread;
+            });
+
+    private SoundUtil() {
+        throw new UnsupportedOperationException("Utility class");
+    }
 
     /**
-     * Plays a sound.
+     * Plays a sound by desktop property name.
      *
-     * @param soundName Name of the sound to play.
+     * @param soundName the desktop property, for example {@code win.sound.hand}
      */
-    public static void playSound(String soundName) {
-        DebugUtil.debug("Playing sound: " + soundName);
-        Runnable runnable = (Runnable) Toolkit.getDefaultToolkit().getDesktopProperty(soundName);
+    public static void playSound(@NotNull String soundName) {
+        try {
+            Object property = Toolkit.getDefaultToolkit().getDesktopProperty(soundName);
 
-        if (runnable != null) {
-            threadPool.execute(runnable);
+            if (property instanceof Runnable runnable) {
+                SOUND_PLAYER.execute(runnable);
+            }
+        } catch (RuntimeException ex) {
+            DebugUtil.warn("Failed to play sound: " + soundName, ex);
         }
     }
 }

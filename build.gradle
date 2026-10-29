@@ -1,181 +1,204 @@
 plugins {
     id 'com.gradleup.shadow' version '9.4.1'
     id 'edu.sc.seis.launch4j' version '4.0.0'
-    id 'maven-publish'
-    id 'application'
     id 'java'
+    id 'application'
 }
 
 group = 'net.foulest'
 version = '1.4.1'
-description = 'RepairKit'
+description = 'RepairKit - an all-in-one Windows repair and maintenance toolkit'
 
-// Set the language level to Java 17
 java {
     toolchain {
-        languageVersion.set(JavaLanguageVersion.of(17))
+        languageVersion = JavaLanguageVersion.of(17)
     }
+}
+
+application {
+    mainClass = 'net.foulest.repairkit.RepairKit'
 }
 
 repositories {
-    // Maven central repository
     mavenCentral()
-    mavenLocal()
-
-    // Local libraries
-    flatDir {
-        dirs 'libs'
-    }
 }
 
 dependencies {
-    // JNA platform - for registry access
+    // JNA and JNA Platform - registry, token, and shell access
     // https://mvnrepository.com/artifact/net.java.dev.jna/jna-platform
     implementation 'net.java.dev.jna:jna-platform:5.19.1'
 
-    // Google Gson - for JSON serialization and deserialization
+    // Google Gson - release metadata
     // https://mvnrepository.com/artifact/com.google.code.gson/gson
     implementation 'com.google.code.gson:gson:2.14.0'
 
-    // two-slices - for sending toasts
+    // two-slices - WinGet progress notifications
     // https://github.com/sshtools/two-slices
     implementation 'com.sshtools:two-slices:0.9.7'
 
-    // JetBrains Annotations - for code inspection and documentation
-    // https://mvnrepository.com/artifact/org.jetbrains/annotations
+    // JetBrains Annotations - nullability documentation for static analysis
     compileOnly 'org.jetbrains:annotations:26.1.0'
 
-    // Lombok - for reducing boilerplate code
-    // https://projectlombok.org
-    compileOnly 'org.projectlombok:lombok:1.18.46'
-    annotationProcessor 'org.projectlombok:lombok:1.18.46'
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+    options.compilerArgs += ['-Xlint:deprecation', '-Xlint:unchecked']
+}
+
+// Byte-for-byte reproducible archives: no timestamps, stable file order.
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+
+processResources {
+    // The build version is substituted into the packaged version.properties.
+    filesMatching('version.properties') {
+        expand(version: project.version)
+    }
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events 'failed', 'skipped'
+        exceptionFormat = 'full'
+    }
+}
+
+// The plain jar stays dependency-free; the shadow jar is the runnable artifact.
+shadowJar {
+    archiveClassifier = 'all'
+    mergeServiceFiles()
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+}
+
+jar {
+    archiveClassifier = 'thin'
 }
 
 launch4j {
-    // Executable file information
-    outfile = "${project.name}-${project.version}.exe"
-    mainClassName = "${project.group}.repairkit.RepairKit"
-    icon = "${projectDir}/src/main/resources/icons/RepairKit.ico"
+    outfile = "RepairKit-${project.version}.exe"
+    jarTask = tasks.shadowJar
+    mainClassName = 'net.foulest.repairkit.RepairKit'
 
-    // Java runtime information
-    // Uses Java 8 as the minimum version; bundled JRE (17) is in the 'jre' directory
-    jreMinVersion = '1.8.0'
+    // The bundled runtime is Java 17: never start with an older JRE.
+    jreMinVersion = '17.0.0'
     bundledJrePath = 'jre'
+    requires64Bit = true
     initialHeapSize = 128
     maxHeapSize = 1024
 
-    // Application version information
-    version = "${project.version}"
-    textVersion = "${project.version}"
-    fileDescription = 'RepairKit by Foulest'
-    copyright = '2026'
-    productName = "${project.name}"
-    internalName = "${project.name}"
+    // A native mutex prevents a second elevated instance from starting.
+    mutexName = 'RepairKit'
 
-    // Custom manifest file for Windows
-    manifest = "${projectDir}/RepairKit.manifest"
+    icon = file('src/main/resources/icons/RepairKit.ico').absolutePath
+    manifest = file('RepairKit.manifest').absolutePath
+    version = project.version
+    textVersion = project.version
+    fileDescription = 'RepairKit'
+    productName = 'RepairKit'
+    internalName = 'RepairKit'
+    copyright = 'Copyright (C) 2026 Foulest'
 }
 
-tasks {
-    shadowJar {
-        archiveFileName.set("${project.name}-${project.version}.jar")
-    }
+def buildDirectory = layout.buildDirectory.get().asFile
 
-    jar {
-        duplicatesStrategy = DuplicatesStrategy.INCLUDE
-        archiveFileName.set("${project.name}-${project.version}.jar")
+tasks.register('signExecutable') {
+    group = 'distribution'
+    description = 'Signs the launcher when REPAIRKIT_SIGNTOOL and REPAIRKIT_CERT_SHA1 are set.'
+    dependsOn createExe
 
-        // Set the 'Main-Class' attribute in the JAR manifest
-        manifest {
-            attributes 'Main-Class': 'net.foulest.repairkit.RepairKit'
-        }
-    }
+    doLast {
+        String signtool = System.getenv('REPAIRKIT_SIGNTOOL')
+        String certificate = System.getenv('REPAIRKIT_CERT_SHA1')
+        File exe = new File(buildDirectory, "launch4j/RepairKit-${project.version}.exe")
 
-    // Zip the launch4j directory for distribution
-    tasks.register('zipLaunch4jDir', Zip) {
-        dependsOn(createExe)
-        from "${projectDir}/build/launch4j"
-        archiveFileName = "${project.name}-${project.version}.zip"
-        destinationDirectory = file("${projectDir}/build")
-    }
-
-    // Create a properties file with the version number
-    tasks.register('createProperties') {
-        dependsOn processResources
-
-        doLast {
-            new File("${projectDir}/build/resources/main/version.properties").withWriter { final writer ->
-                final Properties properties = new Properties()
-                properties['version'] = project.version.toString()
-                properties.store writer, null
-            }
-        }
-    }
-
-    createExe {
-        dependsOn(shadowJar)
-
-        doLast {
-            // Copy the JRE to the launch4j directory
-            copy {
-                from "${projectDir}/jre"
-                into "${projectDir}/build/launch4j/jre"
-            }
-
-            // Copy the config folder to the launch4j directory
-            copy {
-                from "${projectDir}/src/main/resources/config"
-                into "${projectDir}/build/launch4j/config"
-            }
-
-            // Delete the lib folder in the launch4j directory
-            delete "${projectDir}/build/launch4j/lib"
+        if (signtool == null || certificate == null) {
+            logger.lifecycle('Code signing skipped: REPAIRKIT_SIGNTOOL and REPAIRKIT_CERT_SHA1 are not set.')
+            return
         }
 
-        finalizedBy(zipLaunch4jDir)
-    }
+        if (!exe.isFile()) {
+            throw new GradleException("The launcher was not created: ${exe}")
+        }
 
-    compileJava {
-        options.encoding = 'UTF-8'
-    }
-
-    classes {
-        dependsOn createProperties
-    }
-
-    build {
-        dependsOn(shadowJar)
-    }
-
-    distZip {
-        dependsOn(shadowJar)
-    }
-
-    distTar {
-        dependsOn(shadowJar)
-    }
-
-    startScripts {
-        dependsOn(shadowJar)
-    }
-
-    startShadowScripts {
-        dependsOn(jar)
-    }
-
-    tasks.register('sourceJar', Jar) {
-        from sourceSets.main.allJava
+        exec {
+            commandLine signtool, 'sign', '/sha1', certificate, '/fd', 'sha256',
+                    '/tr', 'http://timestamp.digicert.com', '/td', 'sha256', exe.absolutePath
+        }
     }
 }
 
-publishing {
-    publications {
-        mavenJava(MavenPublication) {
-            groupId = 'net.foulest.repairkit'
-            artifactId = project.name
-            version = project.version
+tasks.register('stageDistribution', Copy) {
+    group = 'distribution'
+    description = 'Stages the executable, bundled runtime, and default configuration.'
+    dependsOn signExecutable
 
-            from components.java
+    from(new File(buildDirectory, 'launch4j')) {
+        include '*.exe'
+    }
+    from('jre') {
+        into 'jre'
+    }
+    from('src/main/resources/config') {
+        into 'config'
+    }
+    into new File(buildDirectory, "dist/RepairKit-${project.version}")
+}
+
+tasks.register('checksums') {
+    group = 'distribution'
+    description = 'Writes SHA-256 checksums for the release archive and launcher.'
+    dependsOn zipDistribution
+
+    doLast {
+        File dist = new File(buildDirectory, 'dist')
+        File output = new File(dist, 'SHA256SUMS.txt')
+        StringBuilder text = new StringBuilder()
+
+        dist.eachFileRecurse { File entry ->
+            if (entry.isFile() && entry.name != 'SHA256SUMS.txt'
+                    && (entry.name.endsWith('.exe') || entry.name.endsWith('.zip'))) {
+                text.append(sha256(entry)).append('  ').append(entry.name).append('\n')
+            }
+        }
+
+        output.text = text.toString()
+        logger.lifecycle("Checksums written to ${output}")
+    }
+}
+
+tasks.register('zipDistribution', Zip) {
+    group = 'distribution'
+    description = 'Packages the staged distribution into a release ZIP.'
+    dependsOn stageDistribution
+
+    from new File(buildDirectory, "dist/RepairKit-${project.version}")
+    archiveFileName = "RepairKit-${project.version}.zip"
+    destinationDirectory = new File(buildDirectory, 'dist')
+}
+
+tasks.register('release') {
+    group = 'distribution'
+    description = 'Builds and validates the complete Windows release.'
+    dependsOn checksums
+}
+
+static String sha256(File file) {
+    java.security.MessageDigest digest = java.security.MessageDigest.getInstance('SHA-256')
+    file.withInputStream { stream ->
+        byte[] buffer = new byte[64 * 1024]
+        int read
+
+        while ((read = stream.read(buffer)) > 0) {
+            digest.update(buffer, 0, read)
         }
     }
+    return digest.digest().encodeHex().toString()
 }

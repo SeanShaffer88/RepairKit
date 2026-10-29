@@ -17,200 +17,343 @@
  */
 package net.foulest.repairkit.util;
 
-import lombok.AccessLevel;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-import net.foulest.repairkit.RepairKit;
 import net.foulest.repairkit.util.config.ConfigLoader;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import javax.swing.*;
 import java.io.IOException;
-import java.io.InputStream;
+import java.nio.file.FileVisitOption;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.nio.file.LinkOption;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 /**
- * Utility class for removing junk files from the system.
+ * Temporary-file cleanup that stays inside known temporary folders.
+ * <p>
+ * The previous implementation searched every indexed volume for
+ * {@code .tmp}, {@code .old}, and {@code .dmp} files and deleted anything whose
+ * last <em>access</em> time was old. Last-access timestamps are disabled on many
+ * Windows installations, so recently used files could be deleted. Cleanup is
+ * now limited to the two temporary directories, uses last-write time, and never
+ * follows links.
  *
  * @author Foulest
  */
-@Data
-@NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class JunkFileUtil {
 
-    // File extensions to scan for
-    // Note: These are protected and can't be modified in the config files
-    private static @NotNull Set<String> JUNK_FILE_EXTENSIONS = Set.of(
-            "\\.tmp$",
-            "\\.temp$",
-            "\\.old$",
-            "\\.old\\.log$",
-            "\\.old\\.txt$",
-            "\\.old\\.ver$",
-            "\\.dmp$",
-            "\\.ds\\_store$",
-            "\\.hprof$"
-    );
-
-    // Paths to exclude from scanning
-    // Note: These are protected and can't be modified in the config files
-    private static @NotNull Set<Path> EXCLUDED_PATHS = Set.of(
-            Path.of("C:\\Windows\\System32")
-    );
+    private JunkFileUtil() {
+        throw new UnsupportedOperationException("Utility class");
+    }
 
     /**
-     * Checks for junk files on the system.
+     * Runs the cleanup described by {@code config/junk_files.json}.
+     *
+     * @return the cleanup result
      */
-    @SuppressWarnings({"unchecked", "NestedMethodCall"})
-    public static void removeJunkFiles() {
-        // Gets the file extensions to scan for from the config file.
-        @NotNull ConfigLoader configLoader = new ConfigLoader(FileUtil.getConfigFile("junk_files.json"));
-        Map<String, Object> junkFilesConfig = configLoader.getConfig().get("junkFiles");
+    public static @NotNull CleanupResult removeJunkFiles() {
+        @NotNull ConfigLoader loader = new ConfigLoader(FileUtil.configFile("junk_files.json"));
+        @NotNull Map<String, Object> config = loader.category("junkFiles");
 
-        // Returns if the config file is missing.
-        if (junkFilesConfig == null) {
-            return;
+        if (config.isEmpty() || !ConfigLoader.flag(config, "enabled", true)) {
+            return new CleanupResult(0, 0, 0, false, "Junk file cleanup is disabled.");
         }
 
-        // Returns if the feature is disabled.
-        if (junkFilesConfig.get("enabled") != null
-                && !junkFilesConfig.get("enabled").equals(Boolean.TRUE)) {
-            return;
+        int olderThanDays = Math.max(1, ConfigLoader.integer(config, "olderThanDays", 7));
+        @NotNull Instant cutoff = Instant.now().minus(olderThanDays, ChronoUnit.DAYS);
+
+        @NotNull Set<Path> roots = new LinkedHashSet<>();
+
+        if (ConfigLoader.flag(config, "cleanUserTempFiles", true)) {
+            addIfSafe(roots, userTemp());
         }
 
-        // Gets the file extensions to scan for from the config file.
-        Object fileExtensions = junkFilesConfig.get("fileExtensions");
-        if (fileExtensions != null && !((Collection<String>) fileExtensions).isEmpty()) {
-            @NotNull Set<String> mergedExtensions = new HashSet<>(JUNK_FILE_EXTENSIONS);
-            mergedExtensions.addAll((Collection<String>) fileExtensions);
-            JUNK_FILE_EXTENSIONS = Set.copyOf(mergedExtensions);
+        if (ConfigLoader.flag(config, "cleanSystemTempFiles", true)) {
+            addIfSafe(roots, WindowsUtil.windowsDirectory().resolve("Temp"));
         }
 
-        // Gets the paths to exclude from scanning from the config file.
-        if (junkFilesConfig.get("excludedPaths") != null
-                && !((Collection<String>) junkFilesConfig.get("excludedPaths")).isEmpty()) {
-            @NotNull Set<Path> excludedPaths = new HashSet<>();
+        for (String extra : ConfigLoader.strings(config, "additionalPaths")) {
+            addIfSafe(roots, expand(extra));
+        }
 
-            // Replaces environment variables in the paths and adds them to the set.
-            for (@NotNull String path : (Iterable<String>) junkFilesConfig.get("excludedPaths")) {
-                @NotNull String fixedPath = path.replace("%temp%", System.getenv("TEMP"))
-                        .replace("%USERPROFILE%", System.getenv("USERPROFILE"));
-                try {
-                    excludedPaths.add(Paths.get(fixedPath).toAbsolutePath().normalize());
-                } catch (InvalidPathException ipe) {
-                    DebugUtil.warn("Invalid excluded path in config: " + fixedPath, ipe);
-                }
+        @NotNull List<Path> excluded = new ArrayList<>();
+
+        for (String excludedPath : ConfigLoader.strings(config, "excludedPaths")) {
+            Path path = expand(excludedPath);
+
+            if (path != null) {
+                excluded.add(path.toAbsolutePath().normalize());
             }
-
-            // Adds the excluded paths to the set without overwriting the default excluded paths.
-            excludedPaths.addAll(EXCLUDED_PATHS);
-            EXCLUDED_PATHS = Set.copyOf(excludedPaths);
         }
 
-        // Empties the Recycle Bin.
-        if (junkFilesConfig.get("emptyRecycleBin") != null
-                && junkFilesConfig.get("emptyRecycleBin").equals(Boolean.TRUE)) {
-            CommandUtil.runPowerShellCommand("Clear-RecycleBin -Force -ErrorAction SilentlyContinue", false);
+        long files = 0;
+        long bytes = 0;
+        long failures = 0;
+
+        for (Path root : roots) {
+            @NotNull CleanupResult result = cleanDirectory(root, cutoff, excluded);
+            files += result.filesDeleted();
+            bytes += result.bytesFreed();
+            failures += result.failures();
         }
 
-        // Deletes files in the Temp directory older than one day.
-        if (junkFilesConfig.get("cleanUserTempFiles") != null
-                && junkFilesConfig.get("cleanUserTempFiles").equals(Boolean.TRUE)) {
-            CommandUtil.runPowerShellCommand("Get-ChildItem -Path $env:TEMP -Recurse | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-1) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue", false);
+        boolean recycleBinEmptied = false;
+
+        if (ConfigLoader.flag(config, "emptyRecycleBin", false)) {
+            recycleBinEmptied = emptyRecycleBin();
         }
 
-        // Deletes files in the Windows temp directory.
-        if (junkFilesConfig.get("cleanSystemTempFiles") != null
-                && junkFilesConfig.get("cleanSystemTempFiles").equals(Boolean.TRUE)) {
-            CommandUtil.runPowerShellCommand("Get-ChildItem -Path $env:windir\\Temp -Recurse | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue", false);
+        @NotNull String message = "Deleted " + files + " file(s), freed "
+                + bytes + " byte(s) from " + roots.size() + " temporary folder(s)."
+                + (failures > 0 ? " " + failures + " file(s) could not be deleted." : "")
+                + (recycleBinEmptied ? " Recycle Bin emptied." : "");
+
+        return new CleanupResult(files, bytes, failures, recycleBinEmptied, message);
+    }
+
+    private static @Nullable Path userTemp() {
+        String temp = System.getenv("TEMP");
+
+        if (temp == null || temp.isBlank()) {
+            temp = System.getenv("TMP");
         }
 
-        // Deletes files using the Everything Command Line tool.
-        if (junkFilesConfig.get("cleanWithEverything") != null
-                && junkFilesConfig.get("cleanWithEverything").equals(Boolean.TRUE)) {
-            // Checks if Everything was already running.
-            boolean everythingRunningBefore = ProcessUtil.isProcessRunning("Everything-RepairKit.exe");
+        if (temp == null || temp.isBlank()) {
+            temp = System.getProperty("java.io.tmpdir");
+        }
 
-            // Quietly extracts and launches Everything.
-            @NotNull String path = FileUtil.tempDirectory.getPath();
-            SwingUtil.launchApplication("Everything.7z", "\\Everything-RepairKit.exe", "-startup", true, path);
+        return temp == null || temp.isBlank() ? null : Path.of(temp);
+    }
 
-            // Extracts the Everything Command Line tool and runs it to delete junk files.
-            try (@Nullable InputStream input = RepairKit.class.getClassLoader().getResourceAsStream("bin/es.exe")) {
-                if (input == null) {
-                    JOptionPane.showMessageDialog(null,
-                            "Failed to load Everything Command Line file.",
-                            "Error", JOptionPane.ERROR_MESSAGE);
-                    return;
-                }
+    private static void addIfSafe(@NotNull Set<Path> roots, @Nullable Path path) {
+        if (path == null) {
+            return;
+        }
 
-                // Saves the Everything Command Line tool to the temp directory.
-                FileUtil.saveFile(input, FileUtil.tempDirectory + "\\es.exe", true);
+        @NotNull Path normalized = path.toAbsolutePath().normalize();
 
-                long last24Hours = Instant.now().minus(24, ChronoUnit.HOURS).toEpochMilli();
+        if (!isSafeCleanupRoot(normalized)) {
+            DebugUtil.warn("Refusing to clean an unsafe path: " + normalized, null);
+            return;
+        }
 
-                for (String extension : JUNK_FILE_EXTENSIONS) {
-                    // Gets the list of files to delete for each extension.
-                    List<String> files = CommandUtil.getCommandOutput("\"" + FileUtil.tempDirectory + "\\es.exe\" -r " + extension, false, false);
+        if (Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS)) {
+            roots.add(normalized);
+        }
+    }
 
-                    for (String file : files) {
-                        if (!file.contains(":\\")) {
-                            continue;
-                        }
+    /**
+     * Checks whether a directory is a safe cleanup root.
+     * <p>
+     * Only temporary and cache roots qualify: the final path component must be
+     * {@code Temp}, {@code Tmp}, {@code Cache}, or {@code Caches}, except that
+     * descendants of the Windows temporary directory are also permitted.
+     * Drive roots, the Windows directory (except {@code Windows\Temp}), Program
+     * Files, user profile roots, and existing reparse-point ancestors are rejected.
+     * Configured roots still require review; this is not a filesystem sandbox.
+     *
+     * @param path the absolute, normalized path
+     * @return {@code true} when it is safe to delete files under it
+     */
+    public static boolean isSafeCleanupRoot(@NotNull Path path) {
+        @NotNull Path absolute = path.toAbsolutePath().normalize();
 
-                        @NotNull Path filePath;
+        // A drive root has no parent and may never be a cleanup root.
+        if (absolute.getParent() == null) {
+            return false;
+        }
 
-                        try {
-                            filePath = Paths.get(file);
-                        } catch (InvalidPathException ex) {
-                            DebugUtil.warn("Skipped file with invalid path: " + file, ex);
-                            continue;
-                        }
-
-                        // Check if the path is in the excluded paths set
-                        if (EXCLUDED_PATHS.stream().anyMatch(excludedPath -> filePath.toAbsolutePath().normalize().startsWith(excludedPath))) {
-                            continue;
-                        }
-
-                        // Checks if the file is a regular file before attempting to delete it
-                        try {
-                            BasicFileAttributes attrs = Files.readAttributes(filePath, BasicFileAttributes.class);
-
-                            // Ignores files accessed in the last 24 hours.
-                            if (attrs.lastAccessTime().toMillis() > last24Hours) {
-                                continue;
-                            }
-
-                            // Only attempts to delete regular files, not directories or symbolic links.
-                            if (attrs.isRegularFile()) {
-                                try {
-                                    Files.delete(filePath);
-                                    DebugUtil.debug("Deleted junk file: " + filePath);
-                                } catch (IOException ex) {
-                                    DebugUtil.warn("Failed to delete file: " + file, ex);
-                                }
-                            }
-                        } catch (IOException ex) {
-                            DebugUtil.warn("Failed to read attributes for file: " + file, ex);
-                        }
+        // Reject protected ancestors before looking for a Temp/Cache component.
+        // A profile called "Temp" must never qualify as a cleanup directory.
+        for (Path current = absolute; current != null; current = current.getParent()) {
+            Path name = current.getFileName();
+            if (name != null && (name.toString().equalsIgnoreCase("Program Files")
+                    || name.toString().equalsIgnoreCase("Program Files (x86)"))) {
+                return false;
+            }
+            Path parent = current.getParent();
+            if (parent != null && parent.getFileName() != null
+                    && parent.getFileName().toString().equalsIgnoreCase("Users")
+                    && current.equals(absolute)) {
+                return false;
+            }
+            try {
+                if (Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
+                    BasicFileAttributes attrs = Files.readAttributes(current,
+                            BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                    if (attrs.isSymbolicLink() || attrs.isOther()) {
+                        return false;
                     }
                 }
-            } catch (IOException ex) {
-                DebugUtil.warn("Failed to extract Everything Command Line file.", ex);
-            }
-
-            // Kills the Everything process if it wasn't running before, otherwise leaves it running.
-            if (!everythingRunningBefore) {
-                ProcessUtil.killProcess("Everything-RepairKit.exe");
+            } catch (IOException | SecurityException ex) {
+                return false;
             }
         }
+        Path profile = Path.of(System.getProperty("user.home")).toAbsolutePath().normalize();
+        if (absolute.equals(profile) || profile.startsWith(absolute)) {
+            return false;
+        }
+        for (String variable : List.of("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432")) {
+            String value = System.getenv(variable);
+            if (value != null && !value.isBlank()
+                    && absolute.startsWith(Path.of(value).toAbsolutePath().normalize())) {
+                return false;
+            }
+        }
+
+        @NotNull Path windows = WindowsUtil.windowsDirectory().toAbsolutePath().normalize();
+
+        if (absolute.equals(windows)) {
+            return false;
+        }
+
+        if (absolute.startsWith(windows)) {
+            // Inside the Windows directory only the Temp folder is acceptable.
+            return absolute.startsWith(windows.resolve("Temp"));
+        }
+
+        // Only an actual temporary/cache root qualifies; finding a matching
+        // component above Documents or another unrelated directory is unsafe.
+        Path element = absolute.getFileName();
+        if (element != null) {
+            @NotNull String name = element.toString().toLowerCase(Locale.ROOT);
+
+            if (name.equals("temp") || name.equals("tmp") || name.equals("cache")
+                    || name.equals("caches") || name.equals("temporary files")) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static @Nullable Path expand(@NotNull String value) {
+        @NotNull String expanded = value
+                .replace("%TEMP%", System.getenv().getOrDefault("TEMP", ""))
+                .replace("%TMP%", System.getenv().getOrDefault("TMP", ""))
+                .replace("%USERPROFILE%", System.getenv().getOrDefault("USERPROFILE", ""))
+                .replace("%LOCALAPPDATA%", System.getenv().getOrDefault("LOCALAPPDATA", ""))
+                .replace("%windir%", WindowsUtil.windowsDirectory().toString());
+
+        try {
+            return Path.of(expanded);
+        } catch (RuntimeException ex) {
+            DebugUtil.warn("Invalid cleanup path: " + value, ex);
+            return null;
+        }
+    }
+
+    private static @NotNull CleanupResult cleanDirectory(@NotNull Path root, @NotNull Instant cutoff,
+                                                         @NotNull List<Path> excluded) {
+        long[] counters = new long[3];
+
+        // Recheck immediately before traversal, including every existing ancestor.
+        if (!isSafeCleanupRoot(root)) {
+            return new CleanupResult(0, 0, 1, false, "Unsafe cleanup root refused.");
+        }
+
+        try {
+            Files.walkFileTree(root, EnumSet.noneOf(FileVisitOption.class), 32,
+                    new SimpleFileVisitor<>() {
+                        @Override
+                        public @NotNull FileVisitResult preVisitDirectory(@NotNull Path directory,
+                                                                          @NotNull BasicFileAttributes attrs) {
+                            if (attrs.isSymbolicLink() || attrs.isOther()) {
+                                return FileVisitResult.SKIP_SUBTREE;
+                            }
+
+                            @NotNull Path normalized = directory.toAbsolutePath().normalize();
+
+                            for (Path excludedPath : excluded) {
+                                if (normalized.startsWith(excludedPath)) {
+                                    return FileVisitResult.SKIP_SUBTREE;
+                                }
+                            }
+
+                            return FileVisitResult.CONTINUE;
+                        }
+
+                        @Override
+                        public @NotNull FileVisitResult visitFile(@NotNull Path file,
+                                                                  @NotNull BasicFileAttributes attrs) {
+                            if (!attrs.isRegularFile()) {
+                                return FileVisitResult.CONTINUE;
+                            }
+
+                            if (attrs.lastModifiedTime().toInstant().isAfter(cutoff)) {
+                                return FileVisitResult.CONTINUE;
+                            }
+
+                            try {
+                                long size = attrs.size();
+
+                                if (Files.deleteIfExists(file)) {
+                                    counters[0]++;
+                                    counters[1] += size;
+                                }
+                            } catch (IOException ex) {
+                                counters[2]++;
+
+                                if (counters[2] <= 5) {
+                                    DebugUtil.warn("Failed to delete junk file: " + file, ex);
+                                }
+                            }
+
+                            return FileVisitResult.CONTINUE;
+                        }
+
+                        @Override
+                        public @NotNull FileVisitResult visitFileFailed(@NotNull Path file,
+                                                                        @NotNull IOException ex) {
+                            counters[2]++;
+                            return FileVisitResult.CONTINUE;
+                        }
+                    });
+        } catch (IOException ex) {
+            DebugUtil.warn("Failed to walk the temporary directory: " + root, ex);
+        }
+
+        if (counters[0] > 0) {
+            DebugUtil.debug("Cleaned " + counters[0] + " file(s) from " + root);
+        }
+
+        return new CleanupResult(counters[0], counters[1], counters[2], false, "");
+    }
+
+    private static boolean emptyRecycleBin() {
+        @NotNull CommandResult result = CommandUtil.runPowerShell(
+                "Clear-RecycleBin -Force -ErrorAction Stop", Duration.ofMinutes(2));
+
+        if (!result.succeeded()) {
+            DebugUtil.warn("Failed to empty the Recycle Bin", null);
+        }
+
+        return result.succeeded();
+    }
+
+    /**
+     * The outcome of a cleanup.
+     *
+     * @param filesDeleted     number of files deleted
+     * @param bytesFreed       number of bytes freed
+     * @param failures         number of files that could not be deleted
+     * @param recycleBinEmptied whether the Recycle Bin was emptied
+     * @param message          diagnostic summary
+     * @author Foulest
+     */
+    public record CleanupResult(long filesDeleted, long bytesFreed, long failures,
+                                boolean recycleBinEmptied, @NotNull String message) {
     }
 }

@@ -10,8 +10,8 @@ on:
     branches: [ 'main' ]
 
 jobs:
-  build:
-    name: 'Build Project'
+  test:
+    name: 'Unit Tests'
     runs-on: ubuntu-latest
 
     steps:
@@ -23,12 +23,60 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: 17
+          cache: 'gradle'
 
       - name: 'Setup Gradle'
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
 
       - name: 'Apply Permissions to Gradlew'
         run: chmod +x gradlew
 
-      - name: 'Build with Gradle'
-        run: ./gradlew build
+      - name: 'Run Unit Tests'
+        run: ./gradlew test --stacktrace
+
+      - name: 'Upload Test Report'
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: build/reports/tests/test
+          if-no-files-found: ignore
+
+  windows:
+    name: 'Windows Package'
+    runs-on: windows-latest
+    needs: test
+
+    steps:
+      - name: 'Checkout Repository'
+        uses: actions/checkout@v4
+
+      - name: 'Setup Java'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 17
+          cache: 'gradle'
+
+      - name: 'Setup Gradle'
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: 'Build Launcher and Release ZIP'
+        run: .\gradlew.bat release --stacktrace
+
+      - name: 'Verify Checksums'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'build/dist/SHA256SUMS.txt')) {
+            throw 'SHA256SUMS.txt was not created'
+          }
+          Get-Content 'build/dist/SHA256SUMS.txt'
+
+      - name: 'Upload Release ZIP'
+        uses: actions/upload-artifact@v4
+        with:
+          name: RepairKit-windows
+          path: |
+            build/dist/RepairKit-*.zip
+            build/dist/SHA256SUMS.txt
+          if-no-files-found: error

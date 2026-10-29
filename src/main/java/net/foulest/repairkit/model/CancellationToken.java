@@ -15,21 +15,38 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
-package net.foulest.repairkit.util.config.tasks;
+package net.foulest.repairkit.model;
 
-import org.jetbrains.annotations.NotNull;
+import net.foulest.repairkit.util.CommandUtil;
 
-import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Represents a task runner.
+ * Cooperative cancellation for a repair run.
+ * <p>
+ * Cancelling stops the next queued step and terminates any child process that
+ * is currently running; long-running steps check the token between items.
  *
  * @author Foulest
  */
-@FunctionalInterface
-interface TaskRunner {
+public final class CancellationToken {
 
-    @NotNull
-    @SuppressWarnings("unused")
-    List<Runnable> getTasks();
+    private final AtomicBoolean cancelled = new AtomicBoolean(false);
+
+    /**
+     * Requests cancellation.
+     */
+    public void cancel() {
+        cancelled.set(true);
+        CommandUtil.cancelActiveProcesses();
+    }
+
+    /**
+     * Checks whether cancellation was requested.
+     *
+     * @return {@code true} when cancellation was requested
+     */
+    public boolean isCancelled() {
+        return cancelled.get();
+    }
 }

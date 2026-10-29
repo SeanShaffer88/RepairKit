@@ -17,71 +17,23 @@
  */
 package net.foulest.repairkit.util;
 
-import lombok.experimental.UtilityClass;
-
 /**
- * Utility class for constants.
+ * Names of the Windows desktop sounds used by the interface.
  *
  * @author Foulest
  */
-@UtilityClass
-public class ConstantUtil {
+public final class ConstantUtil {
 
-    /**
-     * Constant for the Arial font.
-     */
-    public final String ARIAL = "Arial";
+    /** The Windows error sound. */
+    public static final String ERROR_SOUND = "win.sound.hand";
 
-    /**
-     * Constant for the error sound played when an error occurs.
-     */
-    public final String ERROR_SOUND = "win.sound.hand";
+    /** The Windows warning sound. */
+    public static final String WARNING_SOUND = "win.sound.asterisk";
 
-    /**
-     * Constant for the warning sound played when a warning occurs.
-     */
-    public final String WARNING_SOUND = "win.sound.asterisk";
+    /** The Windows exclamation sound. */
+    public static final String EXCLAMATION_SOUND = "win.sound.exclamation";
 
-    /**
-     * Constant for the exclamation sound played when an exclamation occurs.
-     */
-    public final String EXCLAMATION_SOUND = "win.sound.exclamation";
-
-    /**
-     * Constant for the version number when the program is auto-updated.
-     */
-    public final String VERSION_AUTO_UPDATED = "Version: Auto-Updated";
-
-    /**
-     * Constant for the title of the Safe Mode dialog.
-     */
-    public final String SAFE_MODE_TITLE = "Safe Mode Detected";
-
-    /**
-     * Constant for the message of the Safe Mode dialog.
-     */
-    public final String SAFE_MODE_MESSAGE = "This feature is incompatible with Safe Mode."
-            + "\nPlease restart your system in normal mode to use this feature.";
-
-    /**
-     * Constant for the title of the incompatible OS dialog.
-     */
-    public final String INCOMPATIBLE_OS_TITLE = "Incompatible Operating System";
-
-    /**
-     * Constant for the title of the outdated OS dialog.
-     */
-    public final String OUTDATED_OS_TITLE = "Outdated Operating System";
-
-    /**
-     * Constant for the message of the outdated OS dialog.
-     */
-    public final String OUTDATED_OS_MESSAGE = "This feature is incompatible with outdated operating systems."
-            + "\nPlease upgrade to Windows 10 or 11 to use this feature.";
-
-    /**
-     * Constant for the message of the bad file location dialog.
-     */
-    public final String BAD_FILE_LOCATION = "RepairKit cannot be run from this folder/directory."
-            + "\nPlease move the RepairKit folder to a different location and try again.";
+    private ConstantUtil() {
+        throw new UnsupportedOperationException("Utility class");
+    }
 }

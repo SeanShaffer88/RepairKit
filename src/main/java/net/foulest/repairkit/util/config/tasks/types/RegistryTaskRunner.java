@@ -18,113 +18,230 @@
 package net.foulest.repairkit.util.config.tasks.types;
 
 import com.sun.jna.platform.win32.WinReg;
+import net.foulest.repairkit.model.RepairTask;
+import net.foulest.repairkit.model.RiskLevel;
+import net.foulest.repairkit.model.StepResult;
 import net.foulest.repairkit.util.DebugUtil;
+import net.foulest.repairkit.util.RegistryBackup;
 import net.foulest.repairkit.util.RegistryUtil;
-import net.foulest.repairkit.util.config.tasks.AbstractTaskRunner;
+import net.foulest.repairkit.util.config.tasks.ConfigEntries;
+import net.foulest.repairkit.util.config.tasks.ConfigTaskRunner;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 /**
- * The task runner for modifying the Windows registry.
+ * Applies registry values from a configuration file.
+ * <p>
+ * Each category becomes one task so that the results table shows which part of
+ * the registry failed. Every value is backed up before it is changed, and a
+ * single bad key is recorded rather than aborting the category.
  *
  * @author Foulest
  */
-public class RegistryTaskRunner extends AbstractTaskRunner {
+public class RegistryTaskRunner implements ConfigTaskRunner {
+
+    private final Map<String, Map<String, Object>> config;
+    private final String fileLabel;
+    private final String idPrefix;
+    private final @Nullable RegistryBackup backup;
 
     /**
-     * Constructs a new task runner instance.
+     * Creates a runner.
      *
-     * @param config The JSON config instance
+     * @param config    the parsed configuration
+     * @param fileLabel the file name shown in the UI
+     * @param idPrefix  prefix for task identifiers, so categories from different
+     *                  files cannot collide
+     * @param backup    the registry backup, may be {@code null}
      */
-    public RegistryTaskRunner(@NotNull Map<String, Map<String, Object>> config) {
-        super(config);
+    public RegistryTaskRunner(@NotNull Map<String, Map<String, Object>> config,
+                              @NotNull String fileLabel,
+                              @NotNull String idPrefix,
+                              @Nullable RegistryBackup backup) {
+        this.config = config;
+        this.fileLabel = fileLabel;
+        this.idPrefix = idPrefix;
+        this.backup = backup;
     }
 
-    @NotNull
     @Override
-    @SuppressWarnings("unchecked")
-    protected List<Runnable> createTasks(@NotNull Map<String, Object> entries) {
-        @NotNull List<Runnable> tasks = new ArrayList<>();
-        Map<String, Object> values = (Map<String, Object>) entries.get("values");
+    public @NotNull List<RepairTask> getTasks() {
+        @NotNull List<RepairTask> tasks = new ArrayList<>();
 
-        values.forEach((key, value) -> {
-            String keyPath;
-            @NotNull String keyName = "";
-            WinReg.HKEY hkey;
-            RegistryAction action;
-            Object keyValue = value;
-
-            // Get the HKEY of the path.
-            if (key.startsWith("HKEY_LOCAL_MACHINE") || key.startsWith("HKLM")) {
-                hkey = WinReg.HKEY_LOCAL_MACHINE;
-                keyPath = key.replace("HKEY_LOCAL_MACHINE\\", "").replace("HKLM\\", "");
-            } else if (key.startsWith("HKEY_CURRENT_USER") || key.startsWith("HKCU")) {
-                hkey = WinReg.HKEY_CURRENT_USER;
-                keyPath = key.replace("HKEY_CURRENT_USER\\", "").replace("HKCU\\", "");
-            } else {
-                DebugUtil.debug("Invalid key: " + key);
+        config.forEach((category, entries) -> {
+            if (!ConfigEntries.isEnabled(entries)) {
+                DebugUtil.debug("Registry category is disabled: " + category);
                 return;
             }
 
-            // Get the registry action from the path.
-            if (value instanceof String) {
-                if (value.equals("DELETE_VALUE")) {
-                    action = RegistryAction.DELETE_VALUE;
-                } else if (value.equals("DELETE_KEY")) {
-                    action = RegistryAction.DELETE_KEY;
-                } else {
-                    action = RegistryAction.SET_STRING_VALUE;
-                }
-            } else if (value instanceof Integer || value instanceof Double) {
-                keyValue = value instanceof Double ? ((Double) value).intValue() : value;
-                action = RegistryAction.SET_INT_VALUE;
-            } else {
-                DebugUtil.debug("Invalid value: " + value);
+            @NotNull Map<String, Object> values = ConfigEntries.values(entries);
+
+            if (values.isEmpty()) {
                 return;
             }
 
-            // Separate the key name from the path.
-            if (action != RegistryAction.DELETE_KEY) {
-                int index = keyPath.lastIndexOf('\\');
-                keyName = keyPath.substring(index + 1);
-                keyPath = keyPath.substring(0, index);
-            }
+            @NotNull String title = "Registry: " + category;
+            @NotNull String description = values.size() + " value(s) from " + fileLabel + ".";
 
-            // Execute the associated action.
-            switch (action) {
-                case SET_INT_VALUE:
-                    RegistryUtil.setRegistryIntValue(hkey, keyPath, keyName, (Integer) keyValue);
-                    break;
-
-                case SET_STRING_VALUE:
-                    RegistryUtil.setRegistryStringValue(hkey, keyPath, keyName, (String) keyValue);
-                    break;
-
-                case DELETE_VALUE:
-                    RegistryUtil.deleteRegistryValue(hkey, keyPath, keyName);
-                    break;
-
-                case DELETE_KEY:
-                    RegistryUtil.deleteRegistryKey(hkey, keyPath);
-                    break;
-
-                default:
-                    break;
-            }
+            tasks.add(new RepairTask(idPrefix + "." + category, title, description,
+                    RiskLevel.MODERATE, true, token -> apply(category, values, token.isCancelled())));
         });
+
         return tasks;
     }
 
-    /**
-     * Represents the registry action.
-     */
-    private enum RegistryAction {
-        SET_INT_VALUE,
-        SET_STRING_VALUE,
+    private @NotNull StepResult apply(@NotNull String category,
+                                      @NotNull Map<String, Object> values,
+                                      boolean cancelledAtStart) {
+        if (cancelledAtStart) {
+            return StepResult.cancelled();
+        }
+
+        int applied = 0;
+        int failed = 0;
+        int skipped = 0;
+
+        for (Map.Entry<String, Object> entry : values.entrySet()) {
+            @Nullable ParsedEntry parsed = ParsedEntry.parse(entry.getKey(), entry.getValue());
+
+            if (parsed == null) {
+                skipped++;
+                DebugUtil.warn("Skipped an invalid registry entry in " + category + ": "
+                        + entry.getKey(), null);
+                continue;
+            }
+
+            try {
+                applyEntry(parsed);
+                applied++;
+            } catch (RuntimeException ex) {
+                failed++;
+                DebugUtil.warn("Failed to apply " + entry.getKey() + " in " + category, ex);
+            }
+        }
+
+        @NotNull String message = applied + " applied, " + failed + " failed, "
+                + skipped + " invalid.";
+
+        if (failed == 0 && skipped == 0) {
+            return StepResult.ok(applied);
+        }
+
+        if (applied == 0) {
+            return StepResult.failed(message);
+        }
+
+        return StepResult.partial(message, applied);
+    }
+
+    private void applyEntry(@NotNull ParsedEntry entry) {
+        switch (entry.action()) {
+            case SET_INT -> {
+                backupValue(entry);
+                RegistryUtil.setInt(entry.hive(), entry.keyPath(), entry.valueName(),
+                        entry.intValue());
+            }
+
+            case SET_STRING -> {
+                backupValue(entry);
+                RegistryUtil.setString(entry.hive(), entry.keyPath(), entry.valueName(),
+                        entry.stringValue());
+            }
+
+            case DELETE_VALUE -> {
+                backupValue(entry);
+                RegistryUtil.deleteValue(entry.hive(), entry.keyPath(), entry.valueName());
+            }
+
+            case DELETE_KEY -> {
+                RegistryBackup.requireAvailable(backup).recordKeyDeletion(entry.hive(), entry.keyPath());
+
+                RegistryUtil.deleteTree(entry.hive(), entry.keyPath());
+            }
+        }
+    }
+
+    private void backupValue(@NotNull ParsedEntry entry) {
+        RegistryBackup.requireAvailable(backup).recordValue(entry.hive(), entry.keyPath(), entry.valueName());
+    }
+
+    private enum Action {
+        SET_INT,
+        SET_STRING,
         DELETE_VALUE,
         DELETE_KEY
+    }
+
+    private record ParsedEntry(WinReg.HKEY hive, String keyPath, String valueName,
+                               Action action, int intValue, String stringValue) {
+
+        private static final int MAX_KEY_LENGTH = 512;
+
+        static @Nullable ParsedEntry parse(@NotNull String key, @Nullable Object value) {
+            if (key.length() > MAX_KEY_LENGTH || !key.contains("\\")) {
+                return null;
+            }
+
+            WinReg.HKEY hive;
+            String path;
+
+            if (key.startsWith("HKEY_LOCAL_MACHINE\\") || key.startsWith("HKLM\\")) {
+                hive = WinReg.HKEY_LOCAL_MACHINE;
+                path = key.startsWith("HKLM\\") ? key.substring(5) : key.substring(19);
+            } else if (key.startsWith("HKEY_CURRENT_USER\\") || key.startsWith("HKCU\\")) {
+                hive = WinReg.HKEY_CURRENT_USER;
+                path = key.startsWith("HKCU\\") ? key.substring(5) : key.substring(18);
+            } else if (key.startsWith("HKEY_CLASSES_ROOT\\") || key.startsWith("HKCR\\")) {
+                hive = WinReg.HKEY_CLASSES_ROOT;
+                path = key.startsWith("HKCR\\") ? key.substring(5) : key.substring(18);
+            } else {
+                return null;
+            }
+
+            if (path.isBlank()) {
+                return null;
+            }
+
+            if ("DELETE_KEY".equals(value)) {
+                return new ParsedEntry(hive, path, "", Action.DELETE_KEY, 0, "");
+            }
+
+            int index = path.lastIndexOf('\\');
+
+            if (index <= 0 || index == path.length() - 1) {
+                return null;
+            }
+
+            @NotNull String valueName = path.substring(index + 1);
+            @NotNull String keyPath = path.substring(0, index);
+
+            // Older configuration files used "(Default)"; the registry calls it "".
+            if (valueName.equals("(Default)") || valueName.equals("@")) {
+                valueName = RegistryUtil.DEFAULT_VALUE;
+            }
+
+            if ("DELETE_VALUE".equals(value)) {
+                return new ParsedEntry(hive, keyPath, valueName, Action.DELETE_VALUE, 0, "");
+            }
+
+            if (value instanceof Integer number) {
+                return new ParsedEntry(hive, keyPath, valueName, Action.SET_INT, number, "");
+            }
+
+            if (value instanceof Double number) {
+                return new ParsedEntry(hive, keyPath, valueName, Action.SET_INT,
+                        number.intValue(), "");
+            }
+
+            if (value instanceof String text) {
+                return new ParsedEntry(hive, keyPath, valueName, Action.SET_STRING, 0, text);
+            }
+
+            return null;
+        }
     }
 }

@@ -34,17 +34,9 @@
       "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\UserProfileEngagement\\ScoobeSystemSettingEnabled": 0,
       "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\Bluetooth\\AllowAdvertising": 0,
       "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\System\\AllowExperimentation": 0,
-      "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\WcmSvc\\wifinetworkmanager\\features\\S-1-5-21-1376222853-718990322-3209866679-1001\\SocialNetworks\\ABCH\\OptInStatus": 0,
-      "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\WcmSvc\\wifinetworkmanager\\features\\S-1-5-21-1376222853-718990322-3209866679-1001\\SocialNetworks\\ABCH-SKYPE\\OptInStatus": 0,
-      "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\WcmSvc\\wifinetworkmanager\\features\\S-1-5-21-1376222853-718990322-3209866679-1001\\SocialNetworks\\FACEBOOK\\OptInStatus": 0,
       "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Diagnostics\\DiagTrack\\DiagTrackAuthorization": 7,
-      "HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet001\\Control\\WMI\\Autologger\\AutoLogger-Diagtrack-Listener\\Start": 0,
-      "HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet001\\Services\\DiagTrack\\Start": 4,
-      "HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet001\\Services\\diagnosticshub.standardcollector.service\\Start": 4,
       "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Remote Assistance\\fAllowFullControl": 0,
       "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Remote Assistance\\fAllowToGetHelp": 0,
-      "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\'CompatTelRunner.exe'\\Debugger": "%windir%\\System32\\taskkill.exe",
-      "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\'DeviceCensus.exe'\\Debugger": "%windir%\\System32\\taskkill.exe",
       "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Direct3D\\MostRecentApplication": "DELETE_KEY",
       "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\MediaPlayer\\Player\\RecentFileList": "DELETE_KEY",
       "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\MediaPlayer\\Player\\RecentURLList": "DELETE_KEY",
@@ -68,7 +60,10 @@
       "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\RecentDocs": "DELETE_KEY",
       "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\NOC_GLOBAL_SETTING_ALLOW_TOASTS_ABOVE_LOCK": 0,
       "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\PushNotifications\\LockScreenToastEnabled": 0,
-      "HKEY_CURRENT_USER\\Microsoft\\Windows\\CurrentVersion\\Feeds\\EnableFeeds": 0
+      "HKEY_CURRENT_USER\\Microsoft\\Windows\\CurrentVersion\\Feeds\\EnableFeeds": 0,
+      "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\WMI\\Autologger\\AutoLogger-Diagtrack-Listener\\Start": 0,
+      "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\DiagTrack\\Start": 4,
+      "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\diagnosticshub.standardcollector.service\\Start": 4
     }
   },
   "securityVulnerabilities": {
@@ -88,7 +83,6 @@
       "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Lsa\\NoLMHash": 1,
       "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\kernel\\DisableExceptionChainValidation": 0,
       "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\kernel\\RestrictAnonymousSAM": 1,
-      "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\fDenyTSConnections": 1,
       "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\LanManServer\\Parameters\\RestrictNullSessAccess": 1
     }
   },
@@ -129,9 +123,9 @@
   "recycleBin": {
     "enabled": true,
     "values": {
-      "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CLSID\\{645FF040-5081-101B-9F08-00AA002F954E}\\DefaultIcon\\(Default)": "C:\\Windows\\System32\\imageres.dll,-54",
       "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CLSID\\{645FF040-5081-101B-9F08-00AA002F954E}\\DefaultIcon\\empty": "C:\\Windows\\System32\\imageres.dll,-55",
-      "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CLSID\\{645FF040-5081-101B-9F08-00AA002F954E}\\DefaultIcon\\full": "C:\\Windows\\System32\\imageres.dll,-54"
+      "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CLSID\\{645FF040-5081-101B-9F08-00AA002F954E}\\DefaultIcon\\full": "C:\\Windows\\System32\\imageres.dll,-54",
+      "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CLSID\\{645FF040-5081-101B-9F08-00AA002F954E}\\DefaultIcon\\@": "C:\\Windows\\System32\\imageres.dll,-54"
     }
   },
   "fileExplorer": {
@@ -181,15 +175,6 @@
       "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Tcp1323Opts": 1
     }
   },
-  "keyboard": {
-    "enabled": true,
-    "values": {
-      "HKEY_CURRENT_USER\\Control Panel\\Accessibility\\Togglevalues\\Flags": "58",
-      "HKEY_CURRENT_USER\\Control Panel\\Accessibility\\Stickyvalues\\Flags": "506",
-      "HKEY_CURRENT_USER\\Control Panel\\Accessibility\\Keyboard Response\\Flags": "122",
-      "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Keyboard Layout\\Scancode Map": "DELETE_VALUE"
-    }
-  },
   "mouse": {
     "enabled": true,
     "values": {
@@ -204,15 +189,6 @@
       "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Power\\EnergyEstimationEnabled": 1,
       "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Power\\EnergyEstimationDisabled": 0,
       "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Power\\UserBatteryDischargeEstimator": 0
-    }
-  },
-  "services": {
-    "enabled": true,
-    "values": {
-      "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows Search\\SetupCompletedSuccessfully": 0,
-      "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\WSearch\\Start": 2,
-      "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\WSearch\\VSS": 2,
-      "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\WSearch\\PlugPlay": 2
     }
   }
 }
